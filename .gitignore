@@ -1,5 +1,6 @@
 # 敏感信息
 .env
+.user_token.json
 
 # Python
 __pycache__/

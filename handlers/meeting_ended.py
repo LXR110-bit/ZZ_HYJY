@@ -1,34 +1,22 @@
 import time
 from services.feishu import (
     get_meeting_minutes_transcript,
-    get_minutes_by_meeting,
     create_document,
     send_summary_and_doc,
 )
 from services.claude import generate_meeting_minutes
 
 
-def handle_meeting_ended(event_data: dict):
+def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
     """处理会议结束事件"""
-    meeting = event_data.get("event", {}).get("meeting", {})
-    meeting_id = meeting.get("meeting_id", "")
-    topic = meeting.get("topic", "未命名会议")
-
     print(f"[event] 会议结束: {topic} (id={meeting_id})")
 
     # 等待妙记生成（通常需要几分钟）
     print("[event] 等待 60 秒让妙记生成...")
     time.sleep(60)
 
-    # 获取逐字稿
+    # 获取逐字稿（内部会先 meeting_id → minute_token → transcript）
     transcript = get_meeting_minutes_transcript(meeting_id)
-    if not transcript:
-        print("[event] 未获取到逐字稿，尝试用 meeting_id 直接查询")
-        meeting_info = get_minutes_by_meeting(meeting_id)
-        minutes_id = meeting_info.get("meeting_minutes_id", "")
-        if minutes_id:
-            transcript = get_meeting_minutes_transcript(minutes_id)
-
     if not transcript:
         print("[event] 逐字稿为空，跳过处理")
         return
