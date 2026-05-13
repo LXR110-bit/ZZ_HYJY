@@ -125,29 +125,138 @@ def create_document(title: str, content: str) -> str:
         return ""
     document_id = data.get("data", {}).get("document", {}).get("document_id", "")
 
-    body_blocks = []
-    for block in content.split("\n"):
-        if not block.strip():
-            continue
-        if block.startswith("## "):
-            body_blocks.append({
-                "block_type": 4,
-                "heading2": {"elements": [{"text_run": {"content": block[3:]}}]},
-            })
-        else:
-            body_blocks.append({
-                "block_type": 2,
-                "text": {"elements": [{"text_run": {"content": block}}]},
-            })
+    children_id, descendants = _build_doc_descendants(content)
+    if descendants:
+        r = requests.post(
+            f"{BASE_URL}/docx/v1/documents/{document_id}/blocks/{document_id}/descendant",
+            headers=_tenant_headers(),
+            json={"children_id": children_id, "index": 0, "descendants": descendants},
+        )
+        d = r.json()
+        if d.get("code") != 0:
+            print(f"[feishu] descendant 失败，降级为纯文本: {d}")
+            _fallback_text_only(document_id, content)
 
+    return f"https://feishu.cn/docx/{document_id}"
+
+
+def _gen_tmp_id() -> str:
+    import uuid
+    return uuid.uuid4().hex[:24]
+
+
+def _parse_doc_blocks(content: str):
+    """把 markdown 文本拆成 [('text', line) | ('table', [[...rows...]])] 列表。"""
+    lines = content.split("\n")
+    result, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|") and lines[i].strip().endswith("|"):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                # 跳过 |---|---| 分隔行
+                if not all(set(c) <= set("-: ") for c in cells if c):
+                    rows.append(cells)
+                i += 1
+            if rows:
+                result.append(("table", rows))
+            continue
+        if stripped:
+            result.append(("text", line))
+        i += 1
+    return result
+
+
+def _text_block(tmp_id: str, line: str) -> dict:
+    if line.startswith("# "):
+        return {"block_id": tmp_id, "block_type": 3,
+                "heading1": {"elements": [{"text_run": {"content": line[2:]}}]}}
+    if line.startswith("## "):
+        return {"block_id": tmp_id, "block_type": 4,
+                "heading2": {"elements": [{"text_run": {"content": line[3:]}}]}}
+    if line.startswith("### "):
+        return {"block_id": tmp_id, "block_type": 5,
+                "heading3": {"elements": [{"text_run": {"content": line[4:]}}]}}
+    return {"block_id": tmp_id, "block_type": 2,
+            "text": {"elements": [{"text_run": {"content": line}}]}}
+
+
+def _build_table(rows) -> tuple[str, list]:
+    """构造一个表格 + 所有单元格 + 单元格内文本的 descendant 列表。"""
+    table_id = _gen_tmp_id()
+    col_count = max(len(r) for r in rows)
+    cell_ids, descendants = [], []
+    for row in rows:
+        row_padded = row + [""] * (col_count - len(row))
+        for cell_text in row_padded:
+            cell_id, text_id = _gen_tmp_id(), _gen_tmp_id()
+            cell_ids.append(cell_id)
+            descendants.append({
+                "block_id": cell_id,
+                "block_type": 32,
+                "table_cell": {},
+                "children": [text_id],
+            })
+            descendants.append({
+                "block_id": text_id,
+                "block_type": 2,
+                "text": {"elements": [{"text_run": {"content": cell_text}}]},
+            })
+    descendants.insert(0, {
+        "block_id": table_id,
+        "block_type": 31,
+        "table": {"property": {"row_size": len(rows), "column_size": col_count}},
+        "children": cell_ids,
+    })
+    return table_id, descendants
+
+
+def _build_doc_descendants(content: str):
+    parts = _parse_doc_blocks(content)
+    children_id, descendants = [], []
+    for kind, payload in parts:
+        if kind == "text":
+            tmp_id = _gen_tmp_id()
+            children_id.append(tmp_id)
+            descendants.append(_text_block(tmp_id, payload))
+        else:
+            table_id, table_descs = _build_table(payload)
+            children_id.append(table_id)
+            descendants.extend(table_descs)
+    return children_id, descendants
+
+
+def _fallback_text_only(document_id: str, content: str):
+    """descendant API 失败时的兜底：把表格行转成"字段：值"列表，全部用普通文本写入。"""
+    body_blocks = []
+    parts = _parse_doc_blocks(content)
+    for kind, payload in parts:
+        if kind == "text":
+            line = payload
+            if line.startswith("## "):
+                body_blocks.append({"block_type": 4,
+                                    "heading2": {"elements": [{"text_run": {"content": line[3:]}}]}})
+            else:
+                body_blocks.append({"block_type": 2,
+                                    "text": {"elements": [{"text_run": {"content": line}}]}})
+        else:
+            rows = payload
+            headers = rows[0] if rows else []
+            for row in rows[1:]:
+                for col_idx, cell in enumerate(row):
+                    field = headers[col_idx] if col_idx < len(headers) else f"列{col_idx + 1}"
+                    body_blocks.append({"block_type": 2,
+                                        "text": {"elements": [{"text_run": {"content": f"{field}: {cell}"}}]}})
+                body_blocks.append({"block_type": 2,
+                                    "text": {"elements": [{"text_run": {"content": "---"}}]}})
     if body_blocks:
         requests.post(
             f"{BASE_URL}/docx/v1/documents/{document_id}/blocks/{document_id}/children",
             headers=_tenant_headers(),
             json={"children": body_blocks, "index": 0},
         )
-
-    return f"https://feishu.cn/docx/{document_id}"
 
 
 def send_summary_and_doc(summary: str, doc_url: str):
