@@ -81,7 +81,9 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
     # 飞书返回 text/plain 纯文本逐字稿
     content_type = resp.headers.get("Content-Type", "")
     if resp.status_code == 200 and "application/json" not in content_type:
-        return resp.text
+        # 飞书有时不带 charset，requests 会用 ISO-8859-1 猜测导致中文乱码
+        # 强制按 UTF-8 解码原始字节
+        return resp.content.decode("utf-8", errors="replace")
 
     # 失败时返回 JSON 错误
     try:
