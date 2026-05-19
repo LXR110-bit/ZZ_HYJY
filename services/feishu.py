@@ -390,7 +390,8 @@ def append_image_to_docx(doc_token: str, image_bytes: bytes, file_name: str = "i
         return ""
     new_block_id = d1["data"]["children"][0]["block_id"]
 
-    # 2. 上传图片到这个 block
+    # 2. 上传图片到这个 block（multipart 上传不能带 application/json header）
+    upload_headers = {"Authorization": f"Bearer {get_tenant_access_token()}"}
     files = {"file": (file_name, image_bytes, "image/jpeg")}
     data = {
         "file_name": file_name,
@@ -400,7 +401,7 @@ def append_image_to_docx(doc_token: str, image_bytes: bytes, file_name: str = "i
     }
     r2 = requests.post(
         f"{BASE_URL}/drive/v1/medias/upload_all",
-        headers=_tenant_headers(),
+        headers=upload_headers,
         files=files,
         data=data,
         timeout=120,
@@ -413,8 +414,9 @@ def append_image_to_docx(doc_token: str, image_bytes: bytes, file_name: str = "i
 
 
 def append_heading_to_docx(doc_token: str, text: str, level: int = 2) -> str:
-    """在 docx 末尾追加一个标题。level 1-9 对应 heading1-heading9。"""
-    block_type = 3 + level  # 3+1=4 (heading1), 3+2=5 (heading2), ...
+    """在 docx 末尾追加一个标题。level 1-9 对应 heading1-heading9。
+    block_type 映射：heading1=3, heading2=4, heading3=5 ..."""
+    block_type = 2 + level
     heading_key = f"heading{level}"
     r = requests.post(
         f"{BASE_URL}/docx/v1/documents/{doc_token}/blocks/{doc_token}/children",
