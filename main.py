@@ -3,6 +3,7 @@ import lark_oapi as lark
 from lark_oapi.api.vc.v1 import *
 from config import FEISHU_APP_ID, FEISHU_APP_SECRET, MEETING_OWNER_WHITELIST
 from handlers.meeting_ended import handle_meeting_ended
+from handlers.minute_card import handle_im_message
 
 
 def _extract_owner_id(meeting) -> str:
@@ -41,10 +42,29 @@ def on_meeting_ended(data) -> None:
     ).start()
 
 
+def on_im_message(data) -> None:
+    """长连接收到群消息事件的回调"""
+    try:
+        chat_id = data.event.message.chat_id
+        msg_type = data.event.message.message_type
+        print(f"[main] 收到群消息: chat={chat_id} type={msg_type}")
+    except Exception as e:
+        print(f"[main] 群消息事件解析失败: {e}")
+        return
+
+    # 放到独立线程，避免阻塞 SDK 心跳
+    threading.Thread(
+        target=handle_im_message,
+        args=(data,),
+        daemon=True,
+    ).start()
+
+
 def main():
     event_handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_vc_meeting_all_meeting_ended_v1(on_meeting_ended)
+        .register_p2_im_message_receive_v1(on_im_message)
         .build()
     )
 

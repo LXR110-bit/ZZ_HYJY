@@ -137,7 +137,29 @@ def create_document(title: str, content: str) -> str:
             print(f"[feishu] descendant 失败，降级为纯文本: {d}")
             _fallback_text_only(document_id, content)
 
+    # 设为组织内可编辑（不阻塞主流程）
+    try:
+        set_doc_tenant_editable(document_id)
+    except Exception as e:
+        print(f"[feishu] 设置文档权限失败（不影响内容生成）: {e}")
+
     return f"https://feishu.cn/docx/{document_id}"
+
+
+def set_doc_tenant_editable(doc_token: str) -> bool:
+    """把 docx 设为组织内任何人可编辑。返回是否成功。"""
+    r = requests.patch(
+        f"{BASE_URL}/drive/v1/permissions/{doc_token}/public",
+        headers=_tenant_headers(),
+        params={"type": "docx"},
+        json={"link_share_entity": "tenant_editable"},
+        timeout=15,
+    )
+    d = r.json()
+    if d.get("code") != 0:
+        print(f"[feishu] 设置组织内可编辑失败: {d}")
+        return False
+    return True
 
 
 def _gen_tmp_id() -> str:
@@ -298,3 +320,137 @@ def _fallback_text_only(document_id: str, content: str):
 def send_summary_and_doc(summary: str, doc_url: str):
     message = f"📋 会议纪要已生成\n\n{summary}\n\n📄 完整版文档: {doc_url}"
     send_message_to_chat(FEISHU_CHAT_ID, message)
+
+
+# ====== 智能纪要图片追加相关 ======
+
+
+def get_docx_blocks(doc_token: str) -> list[dict]:
+    """拉取 docx 全部 block，处理分页。"""
+    items: list[dict] = []
+    page_token = ""
+    while True:
+        params = {"page_size": 500}
+        if page_token:
+            params["page_token"] = page_token
+        r = requests.get(
+            f"{BASE_URL}/docx/v1/documents/{doc_token}/blocks",
+            headers=_tenant_headers(),
+            params=params,
+            timeout=15,
+        )
+        d = r.json()
+        if d.get("code") != 0:
+            print(f"[feishu] 拉 docx blocks 失败: {d}")
+            return items
+        data = d.get("data", {})
+        items.extend(data.get("items", []))
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token", "")
+        if not page_token:
+            break
+    return items
+
+
+def download_image(image_token: str) -> bytes:
+    """从 drive 下载文档媒体（图片）。"""
+    r = requests.get(
+        f"{BASE_URL}/drive/v1/medias/{image_token}/download",
+        headers=_tenant_headers(),
+        timeout=60,
+    )
+    if r.status_code != 200:
+        # 可能是 json 报错
+        try:
+            print(f"[feishu] 下载图片 {image_token} 失败: {r.json()}")
+        except Exception:
+            print(f"[feishu] 下载图片 {image_token} 失败 status={r.status_code}")
+        return b""
+    return r.content
+
+
+def append_image_to_docx(doc_token: str, image_bytes: bytes, file_name: str = "image.jpg") -> str:
+    """
+    在 docx 末尾追加一张图。两步：
+      1. 创建 empty image block
+      2. 把图上传到 docx_image，parent_node 用刚拿到的 block_id
+    返回新 block_id；失败返回 ''。
+    """
+    # 1. 在 root 末尾创建 empty image block
+    r1 = requests.post(
+        f"{BASE_URL}/docx/v1/documents/{doc_token}/blocks/{doc_token}/children",
+        headers=_tenant_headers(),
+        json={"children": [{"block_type": 27, "image": {"token": ""}}], "index": -1},
+        timeout=30,
+    )
+    d1 = r1.json()
+    if d1.get("code") != 0:
+        print(f"[feishu] 创建空 image block 失败: {d1}")
+        return ""
+    new_block_id = d1["data"]["children"][0]["block_id"]
+
+    # 2. 上传图片到这个 block
+    files = {"file": (file_name, image_bytes, "image/jpeg")}
+    data = {
+        "file_name": file_name,
+        "parent_type": "docx_image",
+        "parent_node": new_block_id,
+        "size": str(len(image_bytes)),
+    }
+    r2 = requests.post(
+        f"{BASE_URL}/drive/v1/medias/upload_all",
+        headers=_tenant_headers(),
+        files=files,
+        data=data,
+        timeout=120,
+    )
+    d2 = r2.json()
+    if d2.get("code") != 0:
+        print(f"[feishu] 上传图片到 docx 失败: {d2}")
+        return ""
+    return new_block_id
+
+
+def append_heading_to_docx(doc_token: str, text: str, level: int = 2) -> str:
+    """在 docx 末尾追加一个标题。level 1-9 对应 heading1-heading9。"""
+    block_type = 3 + level  # 3+1=4 (heading1), 3+2=5 (heading2), ...
+    heading_key = f"heading{level}"
+    r = requests.post(
+        f"{BASE_URL}/docx/v1/documents/{doc_token}/blocks/{doc_token}/children",
+        headers=_tenant_headers(),
+        json={
+            "children": [{
+                "block_type": block_type,
+                heading_key: {"elements": [{"text_run": {"content": text}}]},
+            }],
+            "index": -1,
+        },
+        timeout=30,
+    )
+    d = r.json()
+    if d.get("code") != 0:
+        print(f"[feishu] 追加标题失败: {d}")
+        return ""
+    return d["data"]["children"][0]["block_id"]
+
+
+def append_text_to_docx(doc_token: str, text: str) -> str:
+    """在 docx 末尾追加一段普通文字。"""
+    r = requests.post(
+        f"{BASE_URL}/docx/v1/documents/{doc_token}/blocks/{doc_token}/children",
+        headers=_tenant_headers(),
+        json={
+            "children": [{
+                "block_type": 2,
+                "text": {"elements": [{"text_run": {"content": text}}]},
+            }],
+            "index": -1,
+        },
+        timeout=30,
+    )
+    d = r.json()
+    if d.get("code") != 0:
+        print(f"[feishu] 追加文字失败: {d}")
+        return ""
+    return d["data"]["children"][0]["block_id"]
