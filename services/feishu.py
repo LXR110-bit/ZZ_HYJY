@@ -169,18 +169,54 @@ def _parse_doc_blocks(content: str):
     return result
 
 
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_BULLET_RE = re.compile(r"^\s*[-*]\s+(.*)")
+_ORDERED_RE = re.compile(r"^\s*\d+\.\s+(.*)")
+
+
+def _parse_inline(text: str) -> list:
+    """把 **xxx** 拆成 text_run 列表，支持加粗。其余按普通 text_run。"""
+    elements = []
+    pos = 0
+    for m in _BOLD_RE.finditer(text):
+        if m.start() > pos:
+            elements.append({"text_run": {"content": text[pos:m.start()]}})
+        elements.append({
+            "text_run": {
+                "content": m.group(1),
+                "text_element_style": {"bold": True},
+            }
+        })
+        pos = m.end()
+    if pos < len(text):
+        elements.append({"text_run": {"content": text[pos:]}})
+    if not elements:
+        elements.append({"text_run": {"content": text}})
+    return elements
+
+
 def _text_block(tmp_id: str, line: str) -> dict:
     if line.startswith("# "):
         return {"block_id": tmp_id, "block_type": 3,
-                "heading1": {"elements": [{"text_run": {"content": line[2:]}}]}}
+                "heading1": {"elements": _parse_inline(line[2:])}}
     if line.startswith("## "):
         return {"block_id": tmp_id, "block_type": 4,
-                "heading2": {"elements": [{"text_run": {"content": line[3:]}}]}}
+                "heading2": {"elements": _parse_inline(line[3:])}}
     if line.startswith("### "):
         return {"block_id": tmp_id, "block_type": 5,
-                "heading3": {"elements": [{"text_run": {"content": line[4:]}}]}}
+                "heading3": {"elements": _parse_inline(line[4:])}}
+
+    m = _BULLET_RE.match(line)
+    if m:
+        return {"block_id": tmp_id, "block_type": 12,
+                "bullet": {"elements": _parse_inline(m.group(1))}}
+    m = _ORDERED_RE.match(line)
+    if m:
+        return {"block_id": tmp_id, "block_type": 13,
+                "ordered": {"elements": _parse_inline(m.group(1))}}
+
     return {"block_id": tmp_id, "block_type": 2,
-            "text": {"elements": [{"text_run": {"content": line}}]}}
+            "text": {"elements": _parse_inline(line)}}
 
 
 def _build_table(rows) -> tuple[str, list]:
