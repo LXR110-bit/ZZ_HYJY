@@ -17,9 +17,31 @@ def _load_prompt(filename: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _build_system_prompt() -> str:
+WEEKLY_MEETING_PARTICIPANTS = ["徐超", "陈俊", "刘斯佳", "李肖然", "孟祥楠", "熊曼佚", "郑文浩"]
+
+
+def _build_system_prompt(meeting_topic: str = "") -> str:
     output_format = _load_prompt("output_format.md")
     glossary = _load_prompt("business_glossary.md")
+
+    is_weekly = "周会" in meeting_topic
+    weekly_block = ""
+    if is_weekly:
+        names = "、".join(WEEKLY_MEETING_PARTICIPANTS)
+        weekly_block = f"""
+---
+
+# ⚠️ 本场是【周会】——人名强约束规则（最高优先级）
+
+本场会议的参会人**只可能是以下 7 人之一**：{names}
+
+执行规则：
+1. 纪要中所有人名必须来自上述 7 人。任何不在名单内的人名，**严禁凭空生成**。
+2. 逐字稿里的"说话人 1 / 说话人 2 / 说话人 N"是飞书妙记的占位符，**不是真实姓名**。如果无法从上下文锁定身份（自我介绍、被点名、@提及），**保留"说话人 N"原样**，不要瞎猜。
+3. 语音识别的近音字优先在名单内匹配：例如"思佳/思家/斯加"→刘斯佳，"祥南/向南"→孟祥楠，"满意/曼意"→熊曼佚，"小然/消然"→李肖然。
+4. "决策事项"、"待办事项"表格的负责人列：必须是名单内的姓名，或写"待定"；**不允许**出现名单外的姓名。
+5. 对照下方业务术语表的"九-A、周会专属"小节执行，遇冲突以本规则为准。
+"""
 
     return f"""你是转转回收业务团队的专业会议纪要整理助手。
 
@@ -32,7 +54,7 @@ def _build_system_prompt() -> str:
 3. **客观表达**：禁用"效果显著"、"非常好"等主观评价词，用具体数据描述
 4. **信息完整**：决策和待办必须保留完整信息（谁、做什么、什么时候）
 5. **逻辑清晰**：按议题分段，每段有背景、讨论、结论
-
+{weekly_block}
 ---
 
 # 业务术语表（语音识别纠正参考）
@@ -49,7 +71,7 @@ def _build_system_prompt() -> str:
 
 def generate_meeting_minutes(transcript: str, auto_summary: str = "", meeting_topic: str = "") -> dict:
     """调用 Claude 生成完整会议纪要，返回 {summary: 摘要, full: 完整版}"""
-    system_prompt = _build_system_prompt()
+    system_prompt = _build_system_prompt(meeting_topic)
 
     user_content = f"【会议主题】{meeting_topic}\n\n" if meeting_topic else ""
     if auto_summary:
