@@ -62,36 +62,73 @@ def get_minute_token_by_meeting(meeting_id: str) -> str:
     return m.group(1)
 
 
-def get_meeting_minutes_transcript(meeting_id: str) -> str:
-    """完整流程：meeting_id → minute_token → 逐字稿文本。
+def get_minute_summary(minute_token: str) -> str:
+    """获取飞书妙记的智能纪要（AI 生成的摘要）。"""
+    resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
+        headers=_user_headers(),
+    )
+    content_type = resp.headers.get("Content-Type", "")
+    if resp.status_code == 200 and "application/json" not in content_type:
+        return resp.content.decode("utf-8", errors="replace")
+    try:
+        data = resp.json()
+        if data.get("code") == 0:
+            # 尝试从 JSON 结构中提取纪要内容
+            minute_data = data.get("data", {}).get("minute", {})
+            summary = minute_data.get("summary", "") or minute_data.get("content", "")
+            if summary:
+                return summary
+        print(f"[feishu] 获取智能纪要: {data}")
+    except Exception:
+        print(f"[feishu] 获取智能纪要失败，原始响应前 200 字节: {resp.text[:200]}")
+    return ""
 
-    飞书妙记逐字稿 API 返回纯文本（不是 JSON），content-type 为 text/plain。
+
+def get_meeting_minutes_transcript(meeting_id: str) -> str:
+    """完整流程：meeting_id → minute_token → 逐字稿 + 智能纪要。
+
+    同时拉取逐字稿和智能纪要，拼在一起返回给 Claude 处理。
     """
     minute_token = get_minute_token_by_meeting(meeting_id)
     if not minute_token:
+        print("[feishu] 未获取到 minute_token（可能未开启录制），跳过")
         return ""
     print(f"[feishu] 获取到 minute_token: {minute_token}")
 
+    # 拉逐字稿
     resp = requests.get(
         f"{BASE_URL}/minutes/v1/minutes/{minute_token}/transcript",
         headers=_user_headers(),
     )
     print(f"[feishu] transcript API status={resp.status_code} ct={resp.headers.get('Content-Type')}")
 
-    # 飞书返回 text/plain 纯文本逐字稿
+    transcript = ""
     content_type = resp.headers.get("Content-Type", "")
     if resp.status_code == 200 and "application/json" not in content_type:
-        # 飞书有时不带 charset，requests 会用 ISO-8859-1 猜测导致中文乱码
-        # 强制按 UTF-8 解码原始字节
-        return resp.content.decode("utf-8", errors="replace")
+        transcript = resp.content.decode("utf-8", errors="replace")
+    else:
+        try:
+            data = resp.json()
+            print(f"[feishu] 获取逐字稿失败: {data}")
+        except Exception:
+            print(f"[feishu] 获取逐字稿失败，原始响应前 200 字节: {resp.text[:200]}")
 
-    # 失败时返回 JSON 错误
-    try:
-        data = resp.json()
-        print(f"[feishu] 获取逐字稿失败: {data}")
-    except Exception:
-        print(f"[feishu] 获取逐字稿失败，原始响应前 200 字节: {resp.text[:200]}")
-    return ""
+    # 拉智能纪要
+    summary = get_minute_summary(minute_token)
+    if summary:
+        print(f"[feishu] 获取到智能纪要，长度: {len(summary)} 字符")
+
+    # 拼接：优先都给 Claude，让它综合判断
+    parts = []
+    if summary:
+        parts.append(f"【飞书智能纪要】\n{summary}")
+    if transcript:
+        parts.append(f"【逐字稿】\n{transcript}")
+
+    if not parts:
+        return ""
+    return "\n\n---\n\n".join(parts)
 
 
 def send_message_to_chat(chat_id: str, content: str):
