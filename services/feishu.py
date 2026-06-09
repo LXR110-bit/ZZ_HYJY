@@ -177,6 +177,7 @@ def create_document(title: str, content: str) -> str:
     # 设为组织内可编辑（不阻塞主流程）
     try:
         set_doc_tenant_editable(document_id)
+        add_doc_owner(document_id, "ou_a6cee6c6461d5ba265b68fea58f89b3a")
     except Exception as e:
         print(f"[feishu] 设置文档权限失败（不影响内容生成）: {e}")
 
@@ -195,6 +196,26 @@ def set_doc_tenant_editable(doc_token: str) -> bool:
     d = r.json()
     if d.get("code") != 0:
         print(f"[feishu] 设置组织内可编辑失败: {d}")
+        return False
+    return True
+
+
+def add_doc_owner(doc_token: str, open_id: str) -> bool:
+    """把指定用户设为文档管理者（full_access），这样用户可以改权限。"""
+    r = requests.post(
+        f"{BASE_URL}/drive/v1/permissions/{doc_token}/members",
+        headers=_tenant_headers(),
+        params={"type": "docx"},
+        json={
+            "member_type": "openid",
+            "member_id": open_id,
+            "perm": "full_access",
+        },
+        timeout=15,
+    )
+    d = r.json()
+    if d.get("code") != 0:
+        print(f"[feishu] 设置文档管理者失败: {d}")
         return False
     return True
 
