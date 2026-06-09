@@ -14,6 +14,10 @@ _lock = threading.Lock()
 _processed: set[str] = set()
 _processed_lock = threading.Lock()
 
+# 主动拉取智能纪要完成标记（key=our_doc_token）
+_smart_notes_done: set[str] = set()
+_smart_notes_lock = threading.Lock()
+
 DEFAULT_TTL = 8 * 3600  # 8 小时
 
 
@@ -52,3 +56,15 @@ def consume_once(minute_doc_token: str) -> bool:
             for x in list(_processed)[:500]:
                 _processed.discard(x)
     return True
+
+
+def mark_smart_notes_done(our_doc_token: str):
+    """标记某篇纪要已完成智能纪要追加（防止 minute_card 重复追加）。"""
+    with _smart_notes_lock:
+        _smart_notes_done.add(our_doc_token)
+
+
+def is_smart_notes_done(our_doc_token: str) -> bool:
+    """检查某篇纪要是否已完成智能纪要追加。"""
+    with _smart_notes_lock:
+        return our_doc_token in _smart_notes_done

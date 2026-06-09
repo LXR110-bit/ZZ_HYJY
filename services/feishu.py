@@ -534,3 +534,137 @@ def append_text_to_docx(doc_token: str, text: str) -> str:
         print(f"[feishu] 追加文字失败: {d}")
         return ""
     return d["data"]["children"][0]["block_id"]
+
+
+# ====== 智能纪要主动拉取 ======
+
+
+def get_minute_doc_token(minute_token: str) -> str:
+    """从妙记详情中获取智能纪要文档的 doc_token（即 note_id）。"""
+    resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
+        headers=_user_headers(),
+    )
+    data = resp.json()
+    if data.get("code") != 0:
+        print(f"[feishu] 获取妙记详情失败: {data}")
+        return ""
+    minute_data = data.get("data", {}).get("minute", {})
+    print(f"[feishu] 妙记详情 keys: {list(minute_data.keys())}")
+    note_id = minute_data.get("note_id", "")
+    if not note_id:
+        print(f"[feishu] 妙记详情中无 note_id")
+    return note_id
+
+
+def _extract_text_from_elements(elements: list) -> str:
+    """从 block elements 列表中拼接纯文本。"""
+    parts = []
+    for el in elements:
+        text_run = el.get("text_run", {})
+        content = text_run.get("content", "")
+        if content:
+            parts.append(content)
+    return "".join(parts)
+
+
+def extract_smart_notes_content(doc_token: str) -> dict:
+    """从智能纪要 docx 中提取文本内容和图片列表。"""
+    blocks = get_docx_blocks(doc_token)
+    if not blocks:
+        return {"texts": [], "images": []}
+
+    texts = []
+    images = []
+
+    for block in blocks:
+        block_type = block.get("block_type")
+
+        if block_type == 2:
+            content = _extract_text_from_elements(block.get("text", {}).get("elements", []))
+            if content.strip():
+                texts.append({"type": "text", "content": content, "level": 0})
+
+        elif 3 <= block_type <= 9:
+            level = block_type - 2
+            heading_key = f"heading{level}"
+            content = _extract_text_from_elements(block.get(heading_key, {}).get("elements", []))
+            if content.strip():
+                texts.append({"type": "heading", "content": content, "level": level})
+
+        elif block_type == 12:
+            content = _extract_text_from_elements(block.get("bullet", {}).get("elements", []))
+            if content.strip():
+                texts.append({"type": "text", "content": f"- {content}", "level": 0})
+
+        elif block_type == 13:
+            content = _extract_text_from_elements(block.get("ordered", {}).get("elements", []))
+            if content.strip():
+                texts.append({"type": "text", "content": content, "level": 0})
+
+        elif block_type == 27:
+            image_token = block.get("image", {}).get("token", "")
+            caption = block.get("image", {}).get("caption", {}).get("content", "")
+            if image_token:
+                images.append({"token": image_token, "caption": caption})
+
+    return {"texts": texts, "images": images}
+
+
+def poll_smart_notes(minute_token: str, max_attempts: int = 8, interval: int = 30) -> str:
+    """轮询等待智能纪要文档生成完毕，返回 doc_token。"""
+    for attempt in range(max_attempts):
+        doc_token = get_minute_doc_token(minute_token)
+        if doc_token:
+            blocks = get_docx_blocks(doc_token)
+            if blocks:
+                print(f"[feishu] 智能纪要文档已就绪 (attempt {attempt+1}): {doc_token}, {len(blocks)} blocks")
+                return doc_token
+            else:
+                print(f"[feishu] 拿到 note_id={doc_token} 但 blocks 为空，可能还在生成中")
+
+        if attempt < max_attempts - 1:
+            print(f"[feishu] 智能纪要未就绪 (attempt {attempt+1}/{max_attempts})，{interval}s 后重试")
+            time.sleep(interval)
+
+    print(f"[feishu] 智能纪要在 {max_attempts * interval}s 内未就绪，放弃主动拉取")
+    return ""
+
+
+def append_smart_notes_to_doc(our_doc_token: str, smart_notes_doc_token: str) -> dict:
+    """把智能纪要的文本和图片追加到我们的纪要文档末尾。"""
+    content = extract_smart_notes_content(smart_notes_doc_token)
+    texts = content["texts"]
+    images = content["images"]
+
+    if not texts and not images:
+        print("[feishu] 智能纪要内容为空，跳过追加")
+        return {"texts_appended": 0, "images_appended": 0}
+
+    append_heading_to_docx(our_doc_token, "附录：飞书智能纪要", level=2)
+
+    texts_count = 0
+    for item in texts:
+        if item["type"] == "heading":
+            append_heading_to_docx(our_doc_token, item["content"], level=min(item["level"] + 1, 9))
+        else:
+            append_text_to_docx(our_doc_token, item["content"])
+        texts_count += 1
+        time.sleep(0.2)
+
+    if images:
+        append_heading_to_docx(our_doc_token, "会议截图（屏幕共享）", level=3)
+
+    images_count = 0
+    for idx, img in enumerate(images):
+        img_bytes = download_image(img["token"])
+        if not img_bytes:
+            continue
+        if img["caption"]:
+            append_text_to_docx(our_doc_token, f"📷 {img['caption']}")
+        result = append_image_to_docx(our_doc_token, img_bytes, file_name=f"smart_note_img_{idx+1}.jpg")
+        if result:
+            images_count += 1
+        time.sleep(0.3)
+
+    return {"texts_appended": texts_count, "images_appended": images_count}

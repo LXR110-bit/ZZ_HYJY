@@ -10,7 +10,7 @@ import json
 import re
 import time
 
-from services.doc_mapping import find_recent, consume_once
+from services.doc_mapping import find_recent, consume_once, is_smart_notes_done
 from services.feishu import (
     get_docx_blocks,
     download_image,
@@ -65,6 +65,11 @@ def handle_im_message(data) -> None:
         # 不是相关 chat 或时间太久，跳过
         return
     our_topic, our_doc_token = target
+
+    # 如果主动拉取已完成，跳过被动追加
+    if is_smart_notes_done(our_doc_token):
+        print(f"[minute_card] 智能纪要已通过主动拉取追加，跳过")
+        return
 
     # 从消息 content 里抽 docx token；卡片消息可能是 interactive，content 是个嵌套 JSON
     candidate_tokens = _extract_docx_tokens(content_str)
