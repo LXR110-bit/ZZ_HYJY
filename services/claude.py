@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 import anthropic
 from config import CLAUDE_API_KEY, CLAUDE_BASE_URL, CLAUDE_MODEL
 
@@ -8,6 +9,23 @@ client = anthropic.Anthropic(
 )
 
 PROMPT_DIR = Path(__file__).parent.parent / "prompts"
+
+MAX_RETRIES = 3
+RETRY_DELAY = 10
+
+
+def _call_claude(retries=MAX_RETRIES, **kwargs):
+    """带重试的 Claude API 调用，处理 502/503/529 等临时错误。"""
+    for attempt in range(retries):
+        try:
+            return client.messages.create(**kwargs)
+        except (anthropic.InternalServerError, anthropic.APIConnectionError) as e:
+            if attempt < retries - 1:
+                wait = RETRY_DELAY * (attempt + 1)
+                print(f"[claude] API 调用失败 (attempt {attempt + 1}/{retries}): {e}，{wait}s 后重试")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _load_prompt(filename: str) -> str:
@@ -138,7 +156,7 @@ def generate_meeting_minutes(transcript: str, auto_summary: str = "", meeting_to
     user_content += f"【会议逐字稿】\n{transcript}\n\n"
     user_content += "请基于以上内容，严格按照系统提示中的格式要求，生成完整版会议纪要（Markdown 格式）。"
 
-    response = client.messages.create(
+    response = _call_claude(
         model=CLAUDE_MODEL,
         max_tokens=8192,
         system=system_prompt,
@@ -146,7 +164,7 @@ def generate_meeting_minutes(transcript: str, auto_summary: str = "", meeting_to
     )
     full_minutes = response.content[0].text
 
-    summary_response = client.messages.create(
+    summary_response = _call_claude(
         model=CLAUDE_MODEL,
         max_tokens=800,
         messages=[{
