@@ -8,15 +8,19 @@ from handlers.minute_card import handle_im_message
 
 def _extract_owner_id(meeting) -> str:
     """从 meeting 对象里捞主持人的 open_id。
-    飞书事件结构：meeting.owner.id 是 UserId 对象，含 open_id / union_id / user_id。
+    优先取 owner.id.open_id，没有则 fallback 到 host_user.id.open_id。
     """
-    owner = getattr(meeting, "owner", None)
-    if not owner:
-        return ""
-    user_id_obj = getattr(owner, "id", None)
-    if not user_id_obj:
-        return ""
-    return getattr(user_id_obj, "open_id", "") or ""
+    for field in ("owner", "host_user"):
+        obj = getattr(meeting, field, None)
+        if not obj:
+            continue
+        user_id_obj = getattr(obj, "id", None)
+        if not user_id_obj:
+            continue
+        open_id = getattr(user_id_obj, "open_id", "") or ""
+        if open_id:
+            return open_id
+    return ""
 
 
 def on_meeting_ended(data) -> None:
