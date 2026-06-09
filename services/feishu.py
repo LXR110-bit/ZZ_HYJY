@@ -174,10 +174,10 @@ def create_document(title: str, content: str) -> str:
             print(f"[feishu] descendant 失败，降级为纯文本: {d}")
             _fallback_text_only(document_id, content)
 
-    # 设为组织内可编辑（不阻塞主流程）
+    # 设为组织内可编辑 + 转移所有权给用户（不阻塞主流程）
     try:
         set_doc_tenant_editable(document_id)
-        add_doc_owner(document_id, "ou_a6cee6c6461d5ba265b68fea58f89b3a")
+        transfer_doc_owner(document_id, "ou_a6cee6c6461d5ba265b68fea58f89b3a")
     except Exception as e:
         print(f"[feishu] 设置文档权限失败（不影响内容生成）: {e}")
 
@@ -217,6 +217,26 @@ def add_doc_owner(doc_token: str, open_id: str) -> bool:
     if d.get("code") != 0:
         print(f"[feishu] 设置文档管理者失败: {d}")
         return False
+    return True
+
+
+def transfer_doc_owner(doc_token: str, open_id: str) -> bool:
+    """把文档所有权转移给指定用户，转移后用户可授予任意权限。"""
+    r = requests.post(
+        f"{BASE_URL}/drive/v1/permissions/{doc_token}/members/transfer_owner",
+        headers=_tenant_headers(),
+        params={"type": "docx"},
+        json={
+            "member_type": "openid",
+            "member_id": open_id,
+        },
+        timeout=15,
+    )
+    d = r.json()
+    if d.get("code") != 0:
+        print(f"[feishu] 转移文档所有权失败: {d}")
+        return False
+    print(f"[feishu] 文档所有权已转移给 {open_id}")
     return True
 
 
