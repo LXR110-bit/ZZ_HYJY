@@ -86,9 +86,9 @@ def get_minute_summary(minute_token: str) -> str:
 
 
 def get_meeting_minutes_transcript(meeting_id: str) -> str:
-    """完整流程：meeting_id → minute_token → 逐字稿 + 智能纪要。
+    """完整流程：meeting_id → minute_token → 逐字稿 + AI 产物。
 
-    同时拉取逐字稿和智能纪要，拼在一起返回给 Claude 处理。
+    同时拉取逐字稿和 AI 产物（结构化摘要），拼在一起返回给 Claude 处理。
     """
     minute_token = get_minute_token_by_meeting(meeting_id)
     if not minute_token:
@@ -114,10 +114,12 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
         except Exception:
             print(f"[feishu] 获取逐字稿失败，原始响应前 200 字节: {resp.text[:200]}")
 
-    # 拉智能纪要
-    summary = get_minute_summary(minute_token)
-    if summary:
-        print(f"[feishu] 获取到智能纪要，长度: {len(summary)} 字符")
+    # 拉 AI 产物
+    artifacts = get_minute_artifacts(minute_token)
+    summary = ""
+    if artifacts:
+        summary = artifacts.get("summary", "")
+        print(f"[feishu] 获取到 AI 产物，summary 长度: {len(summary)} 字符")
 
     # 拼接：优先都给 Claude，让它综合判断
     parts = []
@@ -539,22 +541,28 @@ def append_text_to_docx(doc_token: str, text: str) -> str:
 # ====== 智能纪要主动拉取 ======
 
 
-def get_minute_doc_token(minute_token: str) -> str:
-    """从妙记详情中获取智能纪要文档的 doc_token（即 note_id）。"""
+def get_minute_artifacts(minute_token: str) -> dict | None:
+    """获取妙记 AI 产物（智能纪要结构化内容）。
+
+    返回包含 keywords, summary, minute_chapters, minute_todos, transcript 的字典，
+    如果尚未生成或请求失败则返回 None。
+    """
     resp = requests.get(
-        f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}/artifacts",
         headers=_user_headers(),
     )
+    if resp.status_code != 200:
+        print(f"[feishu] artifacts API status={resp.status_code}")
+        return None
     data = resp.json()
     if data.get("code") != 0:
-        print(f"[feishu] 获取妙记详情失败: {data}")
-        return ""
-    minute_data = data.get("data", {}).get("minute", {})
-    print(f"[feishu] 妙记详情 keys: {list(minute_data.keys())}")
-    note_id = minute_data.get("note_id", "")
-    if not note_id:
-        print(f"[feishu] 妙记详情中无 note_id")
-    return note_id
+        print(f"[feishu] 获取 AI 产物失败: code={data.get('code')}, msg={data.get('msg', '')[:100]}")
+        return None
+    artifacts = data.get("data", {})
+    if not artifacts.get("summary") and not artifacts.get("minute_chapters"):
+        # AI 产物尚未生成完毕
+        return None
+    return artifacts
 
 
 def _extract_text_from_elements(elements: list) -> str:
@@ -611,60 +619,98 @@ def extract_smart_notes_content(doc_token: str) -> dict:
     return {"texts": texts, "images": images}
 
 
-def poll_smart_notes(minute_token: str, max_attempts: int = 8, interval: int = 30) -> str:
-    """轮询等待智能纪要文档生成完毕，返回 doc_token。"""
+def poll_minute_artifacts(minute_token: str, max_attempts: int = 8, interval: int = 30) -> dict | None:
+    """轮询等待妙记 AI 产物生成完毕，返回 artifacts 字典。"""
     for attempt in range(max_attempts):
-        doc_token = get_minute_doc_token(minute_token)
-        if doc_token:
-            blocks = get_docx_blocks(doc_token)
-            if blocks:
-                print(f"[feishu] 智能纪要文档已就绪 (attempt {attempt+1}): {doc_token}, {len(blocks)} blocks")
-                return doc_token
-            else:
-                print(f"[feishu] 拿到 note_id={doc_token} 但 blocks 为空，可能还在生成中")
+        artifacts = get_minute_artifacts(minute_token)
+        if artifacts:
+            chapters = artifacts.get("minute_chapters", [])
+            print(f"[feishu] AI 产物已就绪 (attempt {attempt+1}): {len(chapters)} 章节")
+            return artifacts
 
         if attempt < max_attempts - 1:
-            print(f"[feishu] 智能纪要未就绪 (attempt {attempt+1}/{max_attempts})，{interval}s 后重试")
+            print(f"[feishu] AI 产物未就绪 (attempt {attempt+1}/{max_attempts})，{interval}s 后重试")
             time.sleep(interval)
 
-    print(f"[feishu] 智能纪要在 {max_attempts * interval}s 内未就绪，放弃主动拉取")
-    return ""
+    print(f"[feishu] AI 产物在 {max_attempts * interval}s 内未就绪，放弃")
+    return None
 
 
-def append_smart_notes_to_doc(our_doc_token: str, smart_notes_doc_token: str) -> dict:
-    """把智能纪要的文本和图片追加到我们的纪要文档末尾。"""
-    content = extract_smart_notes_content(smart_notes_doc_token)
-    texts = content["texts"]
-    images = content["images"]
+def append_smart_notes_to_doc(our_doc_token: str, artifacts: dict) -> dict:
+    """把 AI 产物的结构化内容追加到我们的纪要文档末尾。"""
+    summary = artifacts.get("summary", "")
+    chapters = artifacts.get("minute_chapters", [])
+    todos = artifacts.get("minute_todos", [])
 
-    if not texts and not images:
-        print("[feishu] 智能纪要内容为空，跳过追加")
+    if not summary and not chapters:
+        print("[feishu] AI 产物内容为空，跳过追加")
         return {"texts_appended": 0, "images_appended": 0}
 
     append_heading_to_docx(our_doc_token, "附录：飞书智能纪要", level=2)
-
     texts_count = 0
-    for item in texts:
-        if item["type"] == "heading":
-            append_heading_to_docx(our_doc_token, item["content"], level=min(item["level"] + 1, 9))
+
+    # 追加总结
+    if summary:
+        append_heading_to_docx(our_doc_token, "会议总结", level=3)
+        # summary 可能是 markdown 格式，按段落追加
+        for para in summary.split("\n"):
+            para = para.strip()
+            if para:
+                append_text_to_docx(our_doc_token, para)
+                texts_count += 1
+                time.sleep(0.15)
+
+    # 追加章节摘要
+    if chapters:
+        append_heading_to_docx(our_doc_token, "章节摘要", level=3)
+        for ch in chapters:
+            title = ch.get("title", "")
+            content = ch.get("summary_content", "")
+            if title:
+                append_heading_to_docx(our_doc_token, title, level=4)
+                texts_count += 1
+            if content:
+                append_text_to_docx(our_doc_token, content)
+                texts_count += 1
+            time.sleep(0.15)
+
+    # 追加待办事项
+    if todos:
+        append_heading_to_docx(our_doc_token, "待办事项", level=3)
+        for todo in todos:
+            content = todo.get("content", "")
+            if content:
+                append_text_to_docx(our_doc_token, f"☐ {content}")
+                texts_count += 1
+                time.sleep(0.15)
+
+    return {"texts_appended": texts_count, "images_appended": 0}
+
+
+# ====== 会议参与者查询 ======
+
+
+CALENDAR_ID = "feishu.cn_8V20yYtOHienZ7laNm8d2b@group.calendar.feishu.cn"
+
+
+def is_user_in_meeting(calendar_event_id: str) -> bool:
+    """通过日历 API 判断当前授权用户是否参与了该会议。"""
+    if not calendar_event_id:
+        return False
+
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/calendar/v4/calendars/{CALENDAR_ID}/events/{calendar_event_id}",
+            headers=_user_headers(),
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            summary = data.get("data", {}).get("event", {}).get("summary", "")
+            print(f"[feishu] 日历事件匹配成功: {summary}")
+            return True
         else:
-            append_text_to_docx(our_doc_token, item["content"])
-        texts_count += 1
-        time.sleep(0.2)
-
-    if images:
-        append_heading_to_docx(our_doc_token, "会议截图（屏幕共享）", level=3)
-
-    images_count = 0
-    for idx, img in enumerate(images):
-        img_bytes = download_image(img["token"])
-        if not img_bytes:
-            continue
-        if img["caption"]:
-            append_text_to_docx(our_doc_token, f"📷 {img['caption']}")
-        result = append_image_to_docx(our_doc_token, img_bytes, file_name=f"smart_note_img_{idx+1}.jpg")
-        if result:
-            images_count += 1
-        time.sleep(0.3)
-
-    return {"texts_appended": texts_count, "images_appended": images_count}
+            return False
+    except Exception as e:
+        print(f"[feishu] 日历查询异常: {e}")
+        return False

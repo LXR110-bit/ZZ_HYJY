@@ -36,7 +36,7 @@ def _save():
 def save_tokens(access_token: str, expires_in: int, refresh_token: str):
     with _lock:
         _cache["access_token"] = access_token
-        _cache["expire_at"] = time.time() + expires_in
+        _cache["expire_at"] = time.time() + int(expires_in)
         _cache["refresh_token"] = refresh_token
         _save()
 

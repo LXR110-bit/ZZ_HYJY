@@ -9,7 +9,7 @@ from config import FEISHU_APP_ID, FEISHU_APP_SECRET
 from services.tokens import save_tokens, _app_access_token
 
 REDIRECT_URI = "http://localhost:9999/callback"
-SCOPES = "minutes:minutes:readonly minutes:minutes.basic:read minutes:minutes.transcript:export"
+SCOPES = "minutes:minutes:readonly minutes:minutes.basic:read minutes:minutes.transcript:export minutes:minutes.artifacts:read calendar:calendar:readonly"
 
 # OAuth 授权 URL (Authorization Code 模式)
 AUTHORIZE_URL = (

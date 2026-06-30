@@ -3,6 +3,7 @@ import lark_oapi as lark
 from lark_oapi.api.vc.v1 import *
 from config import FEISHU_APP_ID, FEISHU_APP_SECRET, MEETING_OWNER_WHITELIST
 from handlers.meeting_ended import handle_meeting_ended
+from services.feishu import is_user_in_meeting
 from handlers.minute_card import handle_im_message
 
 
@@ -32,8 +33,18 @@ def on_meeting_ended(data) -> None:
 
     # 白名单过滤（为空则不过滤，方便调试看 owner_id）
     if MEETING_OWNER_WHITELIST and owner_id not in MEETING_OWNER_WHITELIST:
-        print(f"[main] 主持人 {owner_id} 不在白名单，跳过")
-        return
+        # owner 不在白名单，通过日历判断授权用户是否参会
+        calendar_event_id = getattr(meeting, "calendar_event_id", "") or ""
+
+        if not calendar_event_id:
+            print(f"[main] 主持人 {owner_id} 不在白名单，无 calendar_event_id，跳过")
+            return
+
+        if not is_user_in_meeting(calendar_event_id):
+            print(f"[main] 主持人 {owner_id} 不在白名单，授权用户未参会，跳过")
+            return
+
+        print(f"[main] 授权用户为参会人，继续处理: topic={topic}")
 
     # 放到独立线程处理，避免 sleep(60) 阻塞 SDK 心跳
     threading.Thread(

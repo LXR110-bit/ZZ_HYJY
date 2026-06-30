@@ -6,7 +6,7 @@ from services.feishu import (
     create_document,
     send_summary_and_doc,
     send_message_to_chat,
-    poll_smart_notes,
+    poll_minute_artifacts,
     append_smart_notes_to_doc,
 )
 from services.claude import generate_meeting_minutes
@@ -72,18 +72,18 @@ def _append_smart_notes(meeting_id: str, our_doc_token: str, topic: str):
         print("[smart_notes] 无 minute_token，跳过智能纪要追加")
         return
 
-    smart_notes_doc_token = poll_smart_notes(minute_token, max_attempts=8, interval=30)
-    if not smart_notes_doc_token:
-        print("[smart_notes] 智能纪要超时未生成，依赖 minute_card 被动补图")
+    artifacts = poll_minute_artifacts(minute_token, max_attempts=8, interval=30)
+    if not artifacts:
+        print("[smart_notes] AI 产物超时未生成，跳过")
         return
 
-    result = append_smart_notes_to_doc(our_doc_token, smart_notes_doc_token)
-    print(f"[smart_notes] 追加完成: {result['texts_appended']} 段文字, {result['images_appended']} 张图片")
+    result = append_smart_notes_to_doc(our_doc_token, artifacts)
+    print(f"[smart_notes] 追加完成: {result['texts_appended']} 段文字")
 
     mark_smart_notes_done(our_doc_token)
 
-    if result["texts_appended"] > 0 or result["images_appended"] > 0:
+    if result["texts_appended"] > 0:
         send_message_to_chat(
             FEISHU_CHAT_ID,
-            f"📎 已为「{topic}」纪要追加飞书智能纪要内容（{result['texts_appended']} 段文字 + {result['images_appended']} 张截图）",
+            f"📎 已为「{topic}」纪要追加飞书智能纪要内容（{result['texts_appended']} 段文字）",
         )
