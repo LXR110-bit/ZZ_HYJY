@@ -133,6 +133,64 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def get_minute_meta(minute_token: str) -> dict:
+    """获取妙记基本信息（标题等）。失败返回空 dict。"""
+    resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
+        headers=_user_headers(),
+    )
+    if resp.status_code != 200:
+        print(f"[feishu] minute meta API status={resp.status_code}")
+        return {}
+    data = resp.json()
+    if data.get("code") != 0:
+        print(f"[feishu] 获取妙记信息失败: code={data.get('code')}, msg={data.get('msg', '')[:100]}")
+        return {}
+    minute = data.get("data", {}).get("minute", {})
+    return {
+        "title": minute.get("title", ""),
+        "topic": minute.get("topic", ""),
+        "owner": minute.get("owner", {}),
+    }
+
+
+def get_transcript_by_minute_token(minute_token: str) -> str:
+    """直接用 minute_token 拉逐字稿 + AI 产物，返回拼接文本。"""
+    resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}/transcript",
+        headers=_user_headers(),
+    )
+    print(f"[feishu] transcript API (by token) status={resp.status_code}")
+
+    transcript = ""
+    content_type = resp.headers.get("Content-Type", "")
+    if resp.status_code == 200 and "application/json" not in content_type:
+        transcript = resp.content.decode("utf-8", errors="replace")
+    else:
+        try:
+            data = resp.json()
+            print(f"[feishu] 获取逐字稿失败: {data}")
+        except Exception:
+            print(f"[feishu] 获取逐字稿失败，原始响应前 200 字节: {resp.text[:200]}")
+
+    artifacts = get_minute_artifacts(minute_token)
+    summary = ""
+    if artifacts:
+        summary = artifacts.get("summary", "")
+        print(f"[feishu] AI 产物 summary 长度: {len(summary)} 字符")
+
+    parts = []
+    if summary:
+        parts.append(f"【飞书智能纪要】\n{summary}")
+    if transcript:
+        parts.append(f"【逐字稿】\n{transcript}")
+
+    if not parts:
+        return ""
+    return "\n\n---\n\n".join(parts)
+
+
+
 def send_message_to_chat(chat_id: str, content: str):
     """发送文本消息到飞书群（应用身份）。"""
     resp = requests.post(
@@ -397,9 +455,9 @@ def _fallback_text_only(document_id: str, content: str):
         )
 
 
-def send_summary_and_doc(summary: str, doc_url: str):
+def send_summary_and_doc(summary: str, doc_url: str, chat_id: str = ""):
     message = f"📋 会议纪要已生成\n\n{summary}\n\n📄 完整版文档: {doc_url}"
-    send_message_to_chat(FEISHU_CHAT_ID, message)
+    send_message_to_chat(chat_id or FEISHU_CHAT_ID, message)
 
 
 # ====== 智能纪要图片追加相关 ======

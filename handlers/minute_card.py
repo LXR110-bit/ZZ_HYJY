@@ -7,6 +7,7 @@
 5. 在群里发一条小消息告知"已补 N 张图"
 """
 import json
+import threading
 import re
 import time
 
@@ -18,7 +19,12 @@ from services.feishu import (
     append_heading_to_docx,
     append_text_to_docx,
     send_message_to_chat,
+    get_transcript_by_minute_token,
+    get_minute_meta,
+    create_document,
+    send_summary_and_doc,
 )
+from services.claude import generate_meeting_minutes
 
 # 匹配 docx 链接：https://xxx.feishu.cn/docx/{token}（zhuanspirit 等子域）
 DOCX_URL_RE = re.compile(r"https?://[\w\-.]*?feishu\.cn/docx/([A-Za-z0-9]+)")
@@ -57,6 +63,16 @@ def handle_im_message(data) -> None:
         content_str = msg.content or "{}"
     except Exception as e:
         print(f"[minute_card] 解析事件失败: {e}")
+        return
+
+    # 检测妙记链接，手动触发纪要生成
+    minute_tokens = MINUTE_URL_RE.findall(content_str)
+    if minute_tokens:
+        threading.Thread(
+            target=_handle_minute_link,
+            args=(chat_id, minute_tokens[0]),
+            daemon=True,
+        ).start()
         return
 
     # 反查我们近 8h 生成的文档
@@ -149,3 +165,46 @@ def handle_im_message(data) -> None:
             f"📎 已为「{our_topic}」纪要追加 {success}/{len(images)} 张屏幕共享截图",
         )
     print(f"[minute_card] 完成：共追加 {success}/{len(images)} 张")
+
+
+def _handle_minute_link(chat_id: str, minute_token: str):
+    """处理用户发送的妙记链接，生成纪要。"""
+    print(f"[minute_link] 收到妙记链接: token={minute_token}")
+
+    send_message_to_chat(chat_id, "📝 正在根据妙记生成会议纪要，请稍候...")
+
+    # 获取妙记标题
+    meta = get_minute_meta(minute_token)
+    topic = meta.get("title") or meta.get("topic") or "语音记录"
+    print(f"[minute_link] 妙记标题: {topic}")
+
+    # 拉逐字稿
+    transcript = get_transcript_by_minute_token(minute_token)
+    if not transcript:
+        send_message_to_chat(chat_id, "⚠️ 逐字稿为空，可能权限不足或妙记尚未生成完毕")
+        return
+
+    print(f"[minute_link] 逐字稿长度: {len(transcript)} 字符")
+
+    # 调 Claude 生成纪要
+    try:
+        result = generate_meeting_minutes(transcript, meeting_topic=topic)
+    except Exception as e:
+        print(f"[minute_link] Claude 生成失败: {e}")
+        send_message_to_chat(chat_id, f"⚠️ 纪要生成失败: {e}")
+        return
+
+    summary = result["summary"]
+    full_minutes = result["full"]
+    print(f"[minute_link] 纪要生成完成，摘要 {len(summary)} 字符，完整 {len(full_minutes)} 字符")
+
+    # 创建飞书文档
+    doc_title = f"会议纪要 - {topic}"
+    doc_url = create_document(doc_title, full_minutes)
+
+    if doc_url:
+        send_summary_and_doc(summary, doc_url, chat_id=chat_id)
+        print(f"[minute_link] 已发送纪要: {doc_url}")
+    else:
+        send_message_to_chat(chat_id, f"📋 {doc_title}\n\n{summary}")
+        print("[minute_link] 文档创建失败，仅发送了摘要")
