@@ -18,17 +18,20 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
     """处理会议结束事件"""
     print(f"[event] 会议结束: {topic} (id={meeting_id})")
 
-    # 等待妙记生成（通常需要几分钟）
-    print("[event] 等待 60 秒让妙记生成...")
-    time.sleep(60)
-
-    # 获取逐字稿（内部会先 meeting_id → minute_token → transcript）
-    transcript = get_meeting_minutes_transcript(meeting_id)
+    # 轮询等待妙记逐字稿就绪：长会议（2 小时）转录慢，固定等 60 秒必然拉空。
+    # 首次等 90 秒，之后每 3 分钟拉一次，最多约 60 分钟；拉到非空立即继续。
+    print("[event] 开始轮询等待妙记逐字稿就绪...")
+    transcript = ""
+    for attempt in range(21):
+        time.sleep(90 if attempt == 0 else 180)
+        transcript = get_meeting_minutes_transcript(meeting_id)
+        if transcript:
+            print(f"[event] 逐字稿就绪（第 {attempt + 1} 次轮询），长度: {len(transcript)} 字符")
+            break
+        print(f"[event] 逐字稿未就绪（第 {attempt + 1}/21 次），继续等待...")
     if not transcript:
-        print("[event] 逐字稿为空，跳过处理")
+        print("[event] 轮询超时逐字稿仍为空（可能未开录制/妙记未生成），跳过处理")
         return
-
-    print(f"[event] 获取到逐字稿，长度: {len(transcript)} 字符")
 
     # 调 Claude 生成纪要
     result = generate_meeting_minutes(transcript, meeting_topic=topic)
