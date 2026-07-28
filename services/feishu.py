@@ -120,6 +120,11 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
     if artifacts:
         summary = artifacts.get("summary", "")
         print(f"[feishu] 获取到 AI 产物，summary 长度: {len(summary)} 字符")
+        # fallback：/transcript 接口无权限(403 permission deny)或返回空时，
+        # 改用 artifacts 里自带的 transcript 字段（该接口权限判定更宽松，能覆盖更多会议）
+        if not transcript and artifacts.get("transcript"):
+            transcript = artifacts["transcript"]
+            print(f"[feishu] /transcript 为空，改用 artifacts 逐字稿，长度: {len(transcript)} 字符")
 
     # 拼接：优先都给 Claude，让它综合判断
     parts = []
