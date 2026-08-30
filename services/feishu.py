@@ -2,7 +2,14 @@ import json
 import re
 import time
 import requests
-from config import FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_CHAT_ID
+from config import (
+    FEISHU_APP_ID,
+    FEISHU_APP_SECRET,
+    FEISHU_CHAT_ID,
+    AUTHORIZED_USER_OPEN_ID,
+    DRY_RUN,
+)
+from services.log import log
 from services.tokens import get_user_access_token
 
 BASE_URL = "https://open.feishu.cn/open-apis"
@@ -751,6 +758,47 @@ def append_smart_notes_to_doc(our_doc_token: str, artifacts: dict) -> dict:
 
 
 # ====== 会议参与者查询 ======
+
+
+class VcLookupError(Exception):
+    """VC 会议查询失败——无法判定是否参会。
+
+    与"确定未参会"是两回事：前者应记为 DEGRADED 并计数，后者是正常跳过。
+    """
+
+
+def did_user_attend(meeting_id: str) -> tuple[bool, str]:
+    """用 VC 参会人列表判断授权用户是否真的到场。返回 (是否参会, 判据)。
+
+    与被替换掉的 is_user_in_meeting() 的区别：
+      - 查实际入会记录，不是日历日程。日程挂在他日历上但人没到，旧实现会误判为
+        参会（2026-08 的 6 场周会里错了 5 场，方向全是假阳性）。
+      - 只需要 meeting_id，不需要 calendar_event_id。旧实现要求后者非空，
+        而实测 98.7% 的会议结束事件该字段为空，从不进入判定。
+    """
+    resp = requests.get(
+        f"{BASE_URL}/vc/v1/meetings/{meeting_id}",
+        headers=_tenant_headers(),
+        params={"with_participants": "true", "user_id_type": "open_id"},
+        timeout=15,
+    )
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise VcLookupError(f"vc meeting 返回非 JSON status={resp.status_code}") from e
+
+    if data.get("code") != 0:
+        raise VcLookupError(
+            f"vc meeting 查询失败 status={resp.status_code} "
+            f"code={data.get('code')} msg={data.get('msg')}"
+        )
+
+    meeting = (data.get("data") or {}).get("meeting") or {}
+    # participants 会重复：2026-08-26 那场 participant_count=10 但列表长 11，
+    # host 出现了两次。必须按 id 去重，否则人数判据是错的。
+    ids = {p.get("id") for p in (meeting.get("participants") or []) if p.get("id")}
+    attended = AUTHORIZED_USER_OPEN_ID in ids
+    return attended, f"participants={len(ids)} attended={attended}"
 
 
 CALENDAR_ID = "feishu.cn_8V20yYtOHienZ7laNm8d2b@group.calendar.feishu.cn"
