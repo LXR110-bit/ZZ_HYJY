@@ -272,26 +272,6 @@ def set_doc_tenant_editable(doc_token: str) -> bool:
     return True
 
 
-def add_doc_owner(doc_token: str, open_id: str) -> bool:
-    """把指定用户设为文档管理者（full_access），这样用户可以改权限。"""
-    r = requests.post(
-        f"{BASE_URL}/drive/v1/permissions/{doc_token}/members",
-        headers=_tenant_headers(),
-        params={"type": "docx"},
-        json={
-            "member_type": "openid",
-            "member_id": open_id,
-            "perm": "full_access",
-        },
-        timeout=15,
-    )
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"[feishu] 设置文档管理者失败: {d}")
-        return False
-    return True
-
-
 def transfer_doc_owner(doc_token: str, open_id: str) -> bool:
     """把文档所有权转移给指定用户，转移后用户可授予任意权限。"""
     r = requests.post(
@@ -863,29 +843,3 @@ def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
         log(f"[notify] DRY_RUN 抑制发送: {text}")
         return
     send_message_to_chat(FEISHU_CHAT_ID, text)
-
-
-CALENDAR_ID = "feishu.cn_8V20yYtOHienZ7laNm8d2b@group.calendar.feishu.cn"
-
-
-def is_user_in_meeting(calendar_event_id: str) -> bool:
-    """通过日历 API 判断当前授权用户是否参与了该会议。"""
-    if not calendar_event_id:
-        return False
-
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/calendar/v4/calendars/{CALENDAR_ID}/events/{calendar_event_id}",
-            headers=_user_headers(),
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("code") == 0:
-            summary = data.get("data", {}).get("event", {}).get("summary", "")
-            print(f"[feishu] 日历事件匹配成功: {summary}")
-            return True
-        else:
-            return False
-    except Exception as e:
-        print(f"[feishu] 日历查询异常: {e}")
-        return False

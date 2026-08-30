@@ -1,0 +1,17 @@
+[Unit]
+Description=Feishu Meeting Minutes Bot
+After=network.target
+
+[Service]
+Environment=PYTHONUNBUFFERED=1
+Type=simple
+User=admin
+WorkingDirectory=/opt/ZZ_HYJY
+ExecStart=/opt/ZZ_HYJY/venv/bin/python3 /opt/ZZ_HYJY/main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/feishu-bot.log
+StandardError=append:/var/log/feishu-bot.log
+
+[Install]
+WantedBy=multi-user.target
