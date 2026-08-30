@@ -8,29 +8,59 @@ from services.feishu import (
     send_message_to_chat,
     poll_minute_artifacts,
     append_smart_notes_to_doc,
+    probe_minute_readable,
+    notify_skip,
+    SKIP_NO_RECORDING,
+    SKIP_MINUTE_FORBIDDEN,
+    SKIP_TRANSCRIPT_TIMEOUT,
 )
 from services.claude import generate_meeting_minutes
 from services.doc_mapping import record as record_doc_mapping, mark_smart_notes_done
-from config import FEISHU_CHAT_ID
+from services.log import log
+from config import FEISHU_CHAT_ID, DRY_RUN
 
 
 def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
     """处理会议结束事件"""
-    print(f"[event] 会议结束: {topic} (id={meeting_id})")
+    log(f"[event] 会议结束: {topic} (id={meeting_id})")
 
-    # 轮询等待妙记逐字稿就绪：长会议（2 小时）转录慢，固定等 60 秒必然拉空。
-    # 首次等 90 秒，之后每 3 分钟拉一次，最多约 60 分钟；拉到非空立即继续。
-    print("[event] 开始轮询等待妙记逐字稿就绪...")
+    # 先确认有没有妙记。取不到就是没开录制，立即退出——
+    # 旧代码在这种情况下也会轮询 21 次 × 3 分钟。
+    minute_token = get_minute_token_by_meeting(meeting_id)
+    if not minute_token:
+        log(f"[event] 未获取到 minute_token，判定为未开录制，立即退出: {topic}")
+        notify_skip(topic, SKIP_NO_RECORDING)
+        return
+
+    # 再确认读不读得到。2091005 是"这份妙记不归你"，等一万年也不会变，
+    # 必须和"还没生成好"分开处理。
+    state, detail = probe_minute_readable(minute_token)
+    log(f"[event] 妙记可读性探测: state={state} minute={minute_token} detail={detail}")
+    if state == "forbidden":
+        notify_skip(topic, SKIP_MINUTE_FORBIDDEN, {
+            "minute_token": minute_token,
+            "owner_id": detail.get("owner_id", ""),
+        })
+        return
+
+    if DRY_RUN:
+        log(f"[event] DRY_RUN：判定与探测完成，跳过轮询与生成 topic={topic} state={state}")
+        return
+
+    # 轮询等待逐字稿就绪。走到这里说明权限没问题，只是内容可能还在生成。
+    # 长会议（2 小时）转录慢：首次等 90 秒，之后每 3 分钟一次，最多约 60 分钟。
+    log("[event] 开始轮询等待妙记逐字稿就绪...")
     transcript = ""
     for attempt in range(21):
         time.sleep(90 if attempt == 0 else 180)
         transcript = get_meeting_minutes_transcript(meeting_id)
         if transcript:
-            print(f"[event] 逐字稿就绪（第 {attempt + 1} 次轮询），长度: {len(transcript)} 字符")
+            log(f"[event] 逐字稿就绪（第 {attempt + 1} 次轮询），长度: {len(transcript)} 字符")
             break
-        print(f"[event] 逐字稿未就绪（第 {attempt + 1}/21 次），继续等待...")
+        log(f"[event] 逐字稿未就绪（第 {attempt + 1}/21 次），继续等待...")
     if not transcript:
-        print("[event] 轮询超时逐字稿仍为空（可能未开录制/妙记未生成），跳过处理")
+        log("[event] 轮询超时逐字稿仍为空，跳过处理")
+        notify_skip(topic, SKIP_TRANSCRIPT_TIMEOUT)
         return
 
     # 调 Claude 生成纪要

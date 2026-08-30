@@ -4,7 +4,8 @@ import lark_oapi as lark
 from lark_oapi.api.vc.v1 import *
 from config import FEISHU_APP_ID, FEISHU_APP_SECRET, MEETING_OWNER_WHITELIST
 from handlers.meeting_ended import handle_meeting_ended
-from services.feishu import is_user_in_meeting
+from services.feishu import did_user_attend, VcLookupError
+from services.log import log
 from handlers.minute_card import handle_im_message
 
 
@@ -26,25 +27,27 @@ def on_meeting_ended(data) -> None:
     meeting = data.event.meeting
     owner_id = _extract_owner_id(meeting)
     topic = meeting.topic or "未命名会议"
+    meeting_id = meeting.id
     print(f"[main] 收到会议结束事件: topic={topic} owner={owner_id}")
 
     if MEETING_OWNER_WHITELIST and owner_id not in MEETING_OWNER_WHITELIST:
-        calendar_event_id = getattr(meeting, "calendar_event_id", "") or ""
-
-        if not calendar_event_id:
-            print(f"[main] 主持人 {owner_id} 不在白名单，无 calendar_event_id，跳过")
+        try:
+            attended, evidence = did_user_attend(meeting_id)
+        except VcLookupError as e:
+            # fail-closed：查不到就不处理。fail-open 在 165 场/小时的量级下
+            # 会炸出大量注定失败的处理线程。
+            log(f"[gate] meeting={meeting_id} topic={topic} attend=DEGRADED reason={e}")
             return
-
-        if not is_user_in_meeting(calendar_event_id):
-            print(f"[main] 主持人 {owner_id} 不在白名单，授权用户未参会，跳过")
+        log(f"[gate] meeting={meeting_id} topic={topic} attend={attended} {evidence}")
+        if not attended:
             return
-
-        print(f"[main] 授权用户为参会人，继续处理: topic={topic}")
+    else:
+        log(f"[gate] meeting={meeting_id} topic={topic} attend=True reason=owner_in_whitelist")
 
     threading.Thread(
         target=handle_meeting_ended,
         kwargs={
-            "meeting_id": meeting.id,
+            "meeting_id": meeting_id,
             "topic": topic,
         },
         daemon=True,
