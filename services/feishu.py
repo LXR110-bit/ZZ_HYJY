@@ -801,6 +801,70 @@ def did_user_attend(meeting_id: str) -> tuple[bool, str]:
     return attended, f"participants={len(ids)} attended={attended}"
 
 
+def probe_minute_readable(minute_token: str) -> tuple[str, dict]:
+    """单次探测妙记可读性，返回 ("readable"|"forbidden"|"error", detail)。
+
+    存在的理由：飞书妙记只有 owner（或被显式分享的人）读得到，非 owner 一律
+    返回 2091005。旧代码把 2091005 混同于"逐字稿尚未生成"，导致对一场永远读不到
+    的会议轮询 21 次 × 3 分钟。探测一次就能把这两种情况分开。
+    """
+    resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
+        headers=_user_headers(),
+        timeout=15,
+    )
+    try:
+        data = resp.json()
+    except ValueError:
+        return "error", {"code": None, "msg": f"非 JSON 响应 status={resp.status_code}"}
+
+    code = data.get("code")
+    if code == 0:
+        minute = (data.get("data") or {}).get("minute") or {}
+        return "readable", {
+            "owner_id": minute.get("owner_id", ""),
+            "title": minute.get("title", ""),
+        }
+    if code == 2091005:
+        return "forbidden", {"code": code, "msg": data.get("msg", "")}
+    return "error", {"code": code, "msg": data.get("msg", "")}
+
+
+SKIP_NO_RECORDING = "no_recording"
+SKIP_MINUTE_FORBIDDEN = "minute_forbidden"
+SKIP_TRANSCRIPT_TIMEOUT = "transcript_timeout"
+
+
+def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
+    """把处理终止的原因发到工作群。
+
+    调用约束（防刷屏，不可放宽）：只对"授权用户确实参会"的会议调用。
+    未参会的会议每天上千场，一律静默跳过，绝不发消息。
+    """
+    detail = detail or {}
+
+    if reason == SKIP_NO_RECORDING:
+        text = f"⚠️ 会议「{topic}」未开录制或妙记未生成，无法出纪要。"
+    elif reason == SKIP_MINUTE_FORBIDDEN:
+        token = detail.get("minute_token", "")
+        owner = detail.get("owner_name") or detail.get("owner_id") or "会议发起人"
+        text = (
+            f"⚠️ 会议「{topic}」的妙记不归你所有，机器人读不到逐字稿。\n"
+            f"需要 {owner} 在妙记里把访问权限分享给你。\n"
+            f"https://meetings.feishu.cn/minutes/{token}"
+        )
+    elif reason == SKIP_TRANSCRIPT_TIMEOUT:
+        text = f"⚠️ 会议「{topic}」等待逐字稿超时（约 60 分钟），已放弃。"
+    else:
+        text = f"⚠️ 会议「{topic}」处理终止：{reason}"
+
+    log(f"[notify] topic={topic} reason={reason} detail={detail}")
+    if DRY_RUN:
+        log(f"[notify] DRY_RUN 抑制发送: {text}")
+        return
+    send_message_to_chat(FEISHU_CHAT_ID, text)
+
+
 CALENDAR_ID = "feishu.cn_8V20yYtOHienZ7laNm8d2b@group.calendar.feishu.cn"
 
 
