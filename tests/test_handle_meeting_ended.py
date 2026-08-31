@@ -7,18 +7,20 @@ from handlers import meeting_ended as me
 class TestHandleMeetingEnded(unittest.TestCase):
     @patch("handlers.meeting_ended.notify_skip")
     @patch("handlers.meeting_ended.time.sleep")
-    @patch("handlers.meeting_ended.get_minute_token_by_meeting", return_value="")
+    @patch("handlers.meeting_ended.acquire_minute_token",
+           return_value=("", "no_recording_url"))
     def test_no_minute_token_exits_immediately(self, _tok, msleep, mnotify):
         me.handle_meeting_ended("m1", "某会")
         msleep.assert_not_called()          # 关键：不能再空转 61 分钟
         mnotify.assert_called_once()
         self.assertEqual(mnotify.call_args[0][1], me.SKIP_NO_RECORDING)
+        self.assertEqual(mnotify.call_args[0][2]["reason"], "no_recording_url")
 
     @patch("handlers.meeting_ended.notify_skip")
     @patch("handlers.meeting_ended.time.sleep")
     @patch("handlers.meeting_ended.probe_minute_readable",
            return_value=("forbidden", {"code": 2091005}))
-    @patch("handlers.meeting_ended.get_minute_token_by_meeting", return_value="tok1")
+    @patch("handlers.meeting_ended.acquire_minute_token", return_value=("tok1", "ok"))
     def test_forbidden_exits_immediately_with_link(self, _tok, _probe, msleep, mnotify):
         me.handle_meeting_ended("m1", "诺曼底品类簇周会")
         msleep.assert_not_called()          # 08-19 / 08-26 空转一小时的根因
@@ -31,7 +33,7 @@ class TestHandleMeetingEnded(unittest.TestCase):
     @patch("handlers.meeting_ended.time.sleep")
     @patch("handlers.meeting_ended.probe_minute_readable",
            return_value=("readable", {"owner_id": "ou_x", "title": "t"}))
-    @patch("handlers.meeting_ended.get_minute_token_by_meeting", return_value="tok1")
+    @patch("handlers.meeting_ended.acquire_minute_token", return_value=("tok1", "ok"))
     def test_dry_run_stops_after_probe(self, _tok, _probe, msleep, mnotify):
         me.handle_meeting_ended("m1", "某会")
         msleep.assert_not_called()
@@ -42,7 +44,7 @@ class TestHandleMeetingEnded(unittest.TestCase):
     @patch("handlers.meeting_ended.time.sleep")
     @patch("handlers.meeting_ended.probe_minute_readable",
            return_value=("readable", {"owner_id": "ou_x", "title": "t"}))
-    @patch("handlers.meeting_ended.get_minute_token_by_meeting", return_value="tok1")
+    @patch("handlers.meeting_ended.acquire_minute_token", return_value=("tok1", "ok"))
     def test_readable_but_transcript_never_ready(self, _tok, _probe, msleep, _tr, mnotify):
         me.handle_meeting_ended("m1", "某会")
         self.assertEqual(msleep.call_count, 21)   # 可读时才允许轮询满 21 次

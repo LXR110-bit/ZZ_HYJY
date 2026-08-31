@@ -781,6 +781,52 @@ def did_user_attend(meeting_id: str) -> tuple[bool, str]:
     return attended, f"participants={len(ids)} attended={attended}"
 
 
+RECORD_PROCESSING_CODE = 124002
+
+
+def acquire_minute_token(
+    meeting_id: str, max_attempts: int = 10, interval: int = 60
+) -> tuple[str, str]:
+    """带重试地取 minute_token，返回 (token, reason)。
+
+    存在的理由：会议结束事件在结束后几秒就到达（实测 3 秒），此时飞书对录制接口
+    返回 124002 record processing——录制还在转码，不是"没开录制"。
+    get_minute_token_by_meeting() 对这两种情况一律返回空字符串，无法区分，
+    直接拿它判定会把正常会议误报成"未开录制"（2026-08-31 增长周会即如此）。
+
+    reason 取值：ok / processing / no_recording_url / code=N
+    """
+    reason = "unknown"
+    for attempt in range(max_attempts):
+        resp = requests.get(
+            f"{BASE_URL}/vc/v1/meetings/{meeting_id}/recording",
+            headers=_tenant_headers(),
+            timeout=15,
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+
+        code = data.get("code")
+        if code == 0:
+            url = ((data.get("data") or {}).get("recording") or {}).get("url", "")
+            m = re.search(r"/minutes/([A-Za-z0-9]+)", url)
+            if m:
+                return m.group(1), "ok"
+            return "", "no_recording_url"
+
+        reason = "processing" if code == RECORD_PROCESSING_CODE else f"code={code}"
+        log(
+            f"[feishu] 录制未就绪 (第 {attempt + 1}/{max_attempts} 次) "
+            f"meeting={meeting_id} code={code} msg={data.get('msg')}"
+        )
+        if attempt < max_attempts - 1:
+            time.sleep(interval)
+
+    return "", reason
+
+
 def probe_minute_readable(minute_token: str) -> tuple[str, dict]:
     """单次探测妙记可读性，返回 ("readable"|"forbidden"|"error", detail)。
 
@@ -824,7 +870,14 @@ def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
     detail = detail or {}
 
     if reason == SKIP_NO_RECORDING:
-        text = f"⚠️ 会议「{topic}」未开录制或妙记未生成，无法出纪要。"
+        if detail.get("reason") == "processing":
+            # 录制确实存在，只是转码超出了等待窗口。说"未开录制"是错的。
+            text = (
+                f"⚠️ 会议「{topic}」的录制在等待窗口内仍未转码完成，已放弃自动生成。\n"
+                f"稍后妙记出来后，把妙记链接发到群里可手动生成纪要。"
+            )
+        else:
+            text = f"⚠️ 会议「{topic}」未开录制或妙记未生成，无法出纪要。"
     elif reason == SKIP_MINUTE_FORBIDDEN:
         token = detail.get("minute_token", "")
         owner = detail.get("owner_name") or detail.get("owner_id") or "会议发起人"

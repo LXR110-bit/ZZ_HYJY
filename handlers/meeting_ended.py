@@ -3,6 +3,7 @@ import threading
 from services.feishu import (
     get_meeting_minutes_transcript,
     get_minute_token_by_meeting,
+    acquire_minute_token,
     create_document,
     send_summary_and_doc,
     send_message_to_chat,
@@ -24,12 +25,12 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
     """处理会议结束事件"""
     log(f"[event] 会议结束: {topic} (id={meeting_id})")
 
-    # 先确认有没有妙记。取不到就是没开录制，立即退出——
-    # 旧代码在这种情况下也会轮询 21 次 × 3 分钟。
-    minute_token = get_minute_token_by_meeting(meeting_id)
+    # 先确认有没有妙记。会议结束事件在结束后几秒就到达，此时录制多半还在转码
+    # （飞书返回 124002 record processing），所以必须带重试，不能一次取不到就判死刑。
+    minute_token, reason = acquire_minute_token(meeting_id)
     if not minute_token:
-        log(f"[event] 未获取到 minute_token，判定为未开录制，立即退出: {topic}")
-        notify_skip(topic, SKIP_NO_RECORDING)
+        log(f"[event] 未取到 minute_token，放弃: {topic} reason={reason}")
+        notify_skip(topic, SKIP_NO_RECORDING, {"reason": reason})
         return
 
     # 再确认读不读得到。2091005 是"这份妙记不归你"，等一万年也不会变，
