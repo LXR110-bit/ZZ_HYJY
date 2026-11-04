@@ -263,6 +263,12 @@ def _failure_text(status: str, detail: dict, url: str) -> str:
             f"⚠️ 拉取失败：机器人使用的授权账号 token 失效或缺权限（code={code}）。"
             f"需要重新授权（服务器上运行 authorize.py），之后回复「重试」。"
         )
+    if detail.get("stage") == "artifacts":
+        # 妙记本身打得开，只是内容接口报错：最常见是还在转录 / 生成 AI 产物
+        return (
+            f"⏳ 能打开这份妙记，但内容暂时拿不到（code={code}，{detail.get('msg', '')}），"
+            f"多半是妙记还在转录。稍后在这里回复「重试」即可。\n{url}"
+        )
     return (
         f"⚠️ 拉取妙记失败（code={code}，{detail.get('msg', '')}）。可以稍后回复「重试」；"
         f"多次失败请看服务器日志。\n{url}"
