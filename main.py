@@ -7,6 +7,7 @@ from handlers.meeting_ended import handle_meeting_ended
 from services.feishu import did_user_attend, VcLookupError
 from services.log import log
 from handlers.minute_card import handle_im_message
+from handlers.retry_card import on_card_action
 
 
 def _extract_owner_id(meeting) -> str:
@@ -76,6 +77,7 @@ def _build_event_handler():
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_vc_meeting_all_meeting_ended_v1(on_meeting_ended)
         .register_p2_im_message_receive_v1(on_im_message)
+        .register_p2_card_action_trigger(on_card_action)
         .build()
     )
 

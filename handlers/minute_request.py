@@ -15,7 +15,9 @@ import threading
 import time
 from pathlib import Path
 
-from config import SELF_SERVE_ALLOWED_OPEN_IDS
+from config import SELF_SERVE_ALLOWED_OPEN_IDS, DRY_RUN
+from services.retry_cards import failure_card
+from services import meeting_ledger
 from services.log import log
 from services.feishu import (
     fetch_minute_content,
@@ -214,6 +216,13 @@ def handle_directed(ctx: dict) -> None:
         log(f"[minute_request] sender 不在允许名单，忽略 sender={ctx['sender_id']}")
         return
 
+    if MENTION_KEY_RE.sub("", text).strip(" ：:，,。.!！") == "漏了哪些":
+        from services.retry_cards import missing_card
+        rows = meeting_ledger.missing()
+        card, fallback = missing_card(rows)
+        _reply(ctx, fallback, card=card)
+        return
+
     if tokens:
         hint = _topic_hint(text)
         _save_last_request(ctx["chat_id"], tokens[0], hint)
@@ -242,8 +251,12 @@ def handle_directed(ctx: dict) -> None:
 # ---------- 生成 ----------
 
 
-def _reply(ctx: dict, text: str) -> str:
-    data = reply_message(ctx["message_id"], text)
+def _reply(ctx: dict, text: str, minute_token: str = "", topic: str = "", card: dict | None = None) -> str:
+    if DRY_RUN:
+        log("[minute_request] DRY_RUN 抑制发送")
+        return ""
+    card = card or (failure_card(text, minute_token, topic) if minute_token else None)
+    data = reply_message(ctx["message_id"], text, card=card) if card else reply_message(ctx["message_id"], text)
     reply_id = ((data or {}).get("data") or {}).get("message_id", "")
     log(f"[minute_request] 已回复 reply_message_id={reply_id or 'FAILED'} code={(data or {}).get('code')} 内容前 40 字={text[:40]!r}")
     return reply_id
@@ -283,6 +296,9 @@ def _failure_text(status: str, detail: dict, url: str) -> str:
 
 
 def run_minute_job(ctx: dict, minute_token: str, hint: str, is_retry: bool = False) -> None:
+    if DRY_RUN:
+        log("[minute_request] DRY_RUN 跳过生成")
+        return
     url = f"https://meetings.feishu.cn/minutes/{minute_token}"
     with _inflight_lock:
         if minute_token in _inflight:
@@ -293,7 +309,7 @@ def run_minute_job(ctx: dict, minute_token: str, hint: str, is_retry: bool = Fal
         _run(ctx, minute_token, hint, is_retry, url)
     except Exception as e:  # 兜底：任何异常都要让用户知道，而不是石沉大海
         log(f"[minute_request] 处理异常 minute={minute_token}: {e!r}")
-        _reply(ctx, f"⚠️ 处理出错：{e}。可以回复「重试」再来一次。")
+        _reply(ctx, f"⚠️ 处理出错：{e}。可以回复「重试」再来一次。", minute_token, hint)
     finally:
         with _inflight_lock:
             _inflight.discard(minute_token)
@@ -309,7 +325,7 @@ def _run(ctx: dict, minute_token: str, hint: str, is_retry: bool, url: str) -> N
         f"artifacts_code={detail.get('artifacts_code')} transcript_len={detail.get('transcript_len')}"
     )
     if status != "ok":
-        _reply(ctx, _failure_text(status, detail, url))
+        _reply(ctx, _failure_text(status, detail, url), minute_token, hint or detail.get("title", ""))
         return
 
     topic = hint or detail.get("title") or "会议"
@@ -329,7 +345,7 @@ def _run(ctx: dict, minute_token: str, hint: str, is_retry: bool, url: str) -> N
     doc_title = f"会议纪要 - {topic}"
     doc_url = create_document(doc_title, full_minutes)
     if not doc_url:
-        _reply(ctx, f"📋 {doc_title}\n{format_note}\n\n{summary}\n\n⚠️ 飞书文档创建失败，以上只是摘要。可以回复「重试」。")
+        _reply(ctx, f"📋 {doc_title}\n{format_note}\n\n{summary}\n\n⚠️ 飞书文档创建失败，以上只是摘要。可以回复「重试」。", minute_token, topic)
         return
     doc_token = doc_url.rstrip("/").rsplit("/", 1)[-1]
     log(f"[minute_request] 文档已创建 doc_token={doc_token} url={doc_url}")
@@ -342,4 +358,5 @@ def _run(ctx: dict, minute_token: str, hint: str, is_retry: bool, url: str) -> N
         except Exception as e:
             log(f"[minute_request] 追加飞书智能纪要失败（不影响主流程）: {e!r}")
 
+    meeting_ledger.generated(minute_token, doc_url)
     _reply(ctx, f"📋 会议纪要已生成：{topic}\n{format_note}\n\n{summary}\n\n📄 完整版文档：{doc_url}")

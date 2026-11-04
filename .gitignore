@@ -25,3 +25,6 @@ bot.log
 .idea/
 *.swp
 .minute_requests.json
+.meeting_ledger.jsonl
+PROGRESS.md
+BLOCKED.md

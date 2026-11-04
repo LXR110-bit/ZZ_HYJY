@@ -248,8 +248,14 @@ def fetch_minute_content(minute_token: str) -> tuple[str, str, dict]:
     return "ok", "\n\n---\n\n".join(parts), detail
 
 
-def send_message_to_chat(chat_id: str, content: str):
-    """发送文本消息到飞书群（应用身份）。"""
+def send_message_to_chat(chat_id: str, content: str, card: dict | None = None):
+    """发送消息到飞书群；卡片失败退回文本。"""
+    if DRY_RUN:
+        return {"code": 0, "data": {}}
+    if card:
+        result = send_card(card, chat_id=chat_id)
+        if result is not None:
+            return result
     resp = requests.post(
         f"{BASE_URL}/im/v1/messages",
         headers=_tenant_headers(),
@@ -266,8 +272,14 @@ def send_message_to_chat(chat_id: str, content: str):
     return data
 
 
-def reply_message(message_id: str, content: str) -> dict:
-    """以应用身份回复某条消息（回到用户发消息的那个会话里）。返回飞书原始响应。"""
+def reply_message(message_id: str, content: str, card: dict | None = None) -> dict:
+    """以应用身份回复某条消息；卡片失败退回文本。"""
+    if DRY_RUN:
+        return {"code": 0, "data": {}}
+    if card:
+        result = send_card(card, message_id=message_id)
+        if result is not None:
+            return result
     resp = requests.post(
         f"{BASE_URL}/im/v1/messages/{message_id}/reply",
         headers=_tenant_headers(),
@@ -971,4 +983,31 @@ def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
     if DRY_RUN:
         log(f"[notify] DRY_RUN 抑制发送: {text}")
         return
-    send_message_to_chat(FEISHU_CHAT_ID, text)
+    token = detail.get("minute_token", "")
+    if token and reason != SKIP_NO_RECORDING:
+        from services.retry_cards import failure_card
+        send_message_to_chat(FEISHU_CHAT_ID, text, card=failure_card(text, token, topic))
+    else:
+        send_message_to_chat(FEISHU_CHAT_ID, text)
+
+
+def send_card(card: dict, *, message_id: str = "", chat_id: str = "") -> dict | None:
+    """成功返回响应；失败返回 None，由调用方退回原文本。"""
+    if DRY_RUN:
+        return {"code": 0, "data": {}}
+    try:
+        body = {"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)}
+        params = {}
+        endpoint = f"{BASE_URL}/im/v1/messages/{message_id}/reply" if message_id else f"{BASE_URL}/im/v1/messages"
+        if not message_id:
+            body["receive_id"] = chat_id
+            params["receive_id_type"] = "chat_id"
+        response = requests.post(endpoint, headers=_tenant_headers(), params=params, json=body, timeout=15)
+        data = _json_or_empty(response)
+        if data.get("code") == 0 and (data.get("data") or {}).get("message_id"):
+            log(f"[card] 已发送 message_id={data['data']['message_id']}")
+            return data
+        log(f"[card] 发卡失败，退回纯文本 code={data.get('code')}")
+    except Exception as exc:
+        log(f"[card] 发卡失败，退回纯文本 error={type(exc).__name__}")
+    return None

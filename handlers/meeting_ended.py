@@ -19,16 +19,36 @@ from services.claude import generate_meeting_minutes
 from services.doc_mapping import record as record_doc_mapping, mark_smart_notes_done
 from services.log import log
 from config import FEISHU_CHAT_ID, DRY_RUN
+from services import meeting_ledger
 
 
 def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
+    entry = {"meeting_id": meeting_id, "topic": topic, "meeting_time": time.time(),
+             "status": "processing", "minute_token": "", "doc_url": "", "source": "自动生成"}
+    if not DRY_RUN:
+        meeting_ledger.record(entry)
+    try:
+        _handle_meeting_ended(meeting_id, topic, entry)
+    except Exception as exc:
+        entry["status"] = "error"
+        log(f"[event] 自动生成出错 meeting={meeting_id} error={type(exc).__name__}")
+        if not DRY_RUN:
+            notify_skip(topic, "出错", {"minute_token": entry["minute_token"]})
+    finally:
+        if not DRY_RUN:
+            meeting_ledger.record(entry)
+
+
+def _handle_meeting_ended(meeting_id: str, topic: str, entry: dict):
     """处理会议结束事件"""
     log(f"[event] 会议结束: {topic} (id={meeting_id})")
 
     # 先确认有没有妙记。会议结束事件在结束后几秒就到达，此时录制多半还在转码
     # （飞书返回 124002 record processing），所以必须带重试，不能一次取不到就判死刑。
     minute_token, reason = acquire_minute_token(meeting_id)
+    entry["minute_token"] = minute_token
     if not minute_token:
+        entry["status"] = "timeout" if reason == "processing" else "no_recording" if reason == "no_recording_url" else "error"
         log(f"[event] 未取到 minute_token，放弃: {topic} reason={reason}")
         notify_skip(topic, SKIP_NO_RECORDING, {"reason": reason})
         return
@@ -38,6 +58,7 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
     state, detail = probe_minute_readable(minute_token)
     log(f"[event] 妙记可读性探测: state={state} minute={minute_token} detail={detail}")
     if state == "forbidden":
+        entry["status"] = "forbidden"
         notify_skip(topic, SKIP_MINUTE_FORBIDDEN, {
             "minute_token": minute_token,
             "owner_id": detail.get("owner_id", ""),
@@ -61,7 +82,8 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
         log(f"[event] 逐字稿未就绪（第 {attempt + 1}/21 次），继续等待...")
     if not transcript:
         log("[event] 轮询超时逐字稿仍为空，跳过处理")
-        notify_skip(topic, SKIP_TRANSCRIPT_TIMEOUT)
+        entry["status"] = "timeout"
+        notify_skip(topic, SKIP_TRANSCRIPT_TIMEOUT, {"minute_token": minute_token})
         return
 
     # 调 Claude 生成纪要
@@ -77,6 +99,7 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
 
     # 发送群消息
     if doc_url:
+        entry.update(status="generated", doc_url=doc_url)
         doc_token = doc_url.rstrip("/").rsplit("/", 1)[-1]
         record_doc_mapping(chat_id=FEISHU_CHAT_ID, topic=topic, doc_token=doc_token)
         send_summary_and_doc(summary, doc_url)
@@ -93,6 +116,7 @@ def handle_meeting_ended(meeting_id: str, topic: str = "未命名会议"):
             daemon=True,
         ).start()
     else:
+        entry["status"] = "error"
         send_message_to_chat(FEISHU_CHAT_ID, f"📋 会议纪要 - {topic}\n\n{summary}")
         print("[event] 文档创建失败，仅发送了摘要")
 
