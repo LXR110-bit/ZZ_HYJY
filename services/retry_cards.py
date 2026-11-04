@@ -3,10 +3,24 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
+def minute_url(token: str) -> str:
+    return f"https://meetings.feishu.cn/minutes/{token}"
+
+
 def retry_button(token: str, topic: str) -> dict:
-    return {"tag": "action", "actions": [{"tag": "button", "type": "primary",
-            "text": {"tag": "plain_text", "content": "重试"},
-            "value": {"action": "retry_minute", "minute_token": token, "topic": topic}}]}
+    """「重试」走卡片回调；「打开妙记」是纯跳转链接，不依赖回调。
+
+    卡片正文是 plain_text，里面的链接点不开（2026-11-04 用户反馈），所以单独给一个跳转按钮，
+    方便直接打开妙记去找人开权限。
+    """
+    return {"tag": "action", "actions": [
+        {"tag": "button", "type": "primary",
+         "text": {"tag": "plain_text", "content": "重试"},
+         "value": {"action": "retry_minute", "minute_token": token, "topic": topic}},
+        {"tag": "button", "type": "default",
+         "text": {"tag": "plain_text", "content": "打开妙记"},
+         "url": minute_url(token)},
+    ]}
 
 
 def failure_card(text: str, minute_token: str, topic: str) -> dict:

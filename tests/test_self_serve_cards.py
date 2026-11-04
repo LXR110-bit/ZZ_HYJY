@@ -192,3 +192,23 @@ class TestBackfill(unittest.TestCase):
             rows = parse_logs(Path(tmp), 1793779200)
             self.assertEqual(len(rows), 2)
             self.assertEqual({r["status"] for r in rows}, {"unknown"})
+
+
+class TestOpenLinkButton(unittest.TestCase):
+    def _buttons(self, card):
+        return [a for e in card["elements"] if e["tag"] == "action" for a in e["actions"]]
+
+    def test_failure_card_has_open_minute_button(self):
+        # 2026-11-04 用户反馈：卡片正文里的链接点不开，需要能直接打开妙记
+        btns = self._buttons(failure_card("无权限", "obcnTok1", "某会"))
+        urls = [b.get("url") for b in btns if b.get("url")]
+        self.assertEqual(urls, ["https://meetings.feishu.cn/minutes/obcnTok1"])
+        self.assertTrue(any(b.get("value", {}).get("action") == "retry_minute" for b in btns))
+
+    def test_missing_card_rows_have_open_minute_button(self):
+        card, _ = missing_card([{"meeting_time": 1793773020, "topic": "周会", "status": "forbidden",
+                                 "minute_token": "obcnTok2", "source": "自动生成"}])
+        urls = [b.get("url") for b in self._buttons(card) if b.get("url")]
+        self.assertEqual(urls, ["https://meetings.feishu.cn/minutes/obcnTok2"])
+
+
