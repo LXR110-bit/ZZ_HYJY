@@ -207,6 +207,14 @@ class TestFetchMinuteContent(unittest.TestCase):
             status, _, _ = feishu.fetch_minute_content("tok")
         self.assertEqual(status, "not_found")
 
+    def test_meta_not_ready_is_empty(self):
+        # 2026-11-02 实测：会刚结束时妙记接口返回 2091003 minute not ready
+        with patch("services.feishu._user_headers", return_value={}), \
+             patch("services.feishu.requests.get",
+                   return_value=_resp({"code": 2091003, "msg": "minute not ready , try later"}, status=400)):
+            status, _, _ = feishu.fetch_minute_content("tok")
+        self.assertEqual(status, "empty")
+
     def test_readable_but_empty(self):
         status, _, _ = self._run(
             _resp({"code": 0, "data": {"minute": {"title": "x"}}}),

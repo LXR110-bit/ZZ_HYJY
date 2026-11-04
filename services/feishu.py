@@ -147,6 +147,7 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
 
 MINUTE_FORBIDDEN_CODES = {2091005}   # permission deny：妙记不归授权用户，也没分享给他
 MINUTE_NOT_FOUND_CODES = {2091002}   # resource not found：链接错了或妙记被删
+MINUTE_NOT_READY_CODES = {2091003}   # minute not ready, try later：还在转录（2026-11-02 实测）
 # 授权用户 token 本身有问题（失效 / 缺 scope），与"这份妙记没权限"是两回事
 USER_TOKEN_ERROR_CODES = {99991663, 99991668, 99991677, 99991679, 20026}
 
@@ -189,6 +190,8 @@ def fetch_minute_content(minute_token: str) -> tuple[str, str, dict]:
             return "forbidden", "", detail
         if code in MINUTE_NOT_FOUND_CODES:
             return "not_found", "", detail
+        if code in MINUTE_NOT_READY_CODES:
+            return "empty", "", detail
         return "error", "", detail
 
     minute = (meta.get("data") or {}).get("minute") or {}
@@ -231,6 +234,8 @@ def fetch_minute_content(minute_token: str) -> tuple[str, str, dict]:
         if tr_code in MINUTE_FORBIDDEN_CODES and art_code in MINUTE_FORBIDDEN_CODES:
             detail.update(stage="content", code=art_code, msg="permission deny")
             return "forbidden", "", detail
+        if art_code in MINUTE_NOT_READY_CODES:
+            return "empty", "", detail
         if art_code not in (0, None) and art_code not in MINUTE_FORBIDDEN_CODES:
             detail.update(stage="artifacts", code=art_code, msg=(art.get("msg") or "")[:200])
             return "error", "", detail
