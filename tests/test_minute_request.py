@@ -41,6 +41,11 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(mr._topic_hint(LINK), "")
         self.assertEqual(mr._topic_hint("重试"), "")
 
+    def test_topic_hint_ignores_surrounding_paste(self):
+        # 2026-11-04 实测：用户把整段说明连链接一起粘来，旧逻辑把整段当成了文档标题
+        text = f"【私聊】\n① 商户结算同步会 {LINK}\n   （成功场景，约 1–3 分钟后回复）\n② 别的"
+        self.assertEqual(mr._topic_hint(text), "商户结算同步会")
+
     def test_retry_detection(self):
         self.assertTrue(mr._is_retry("重试"))
         self.assertTrue(mr._is_retry("@_user_1 重试"))

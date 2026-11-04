@@ -119,9 +119,16 @@ def is_directed_to_bot(ctx: dict) -> bool:
 
 
 def _topic_hint(text: str) -> str:
-    """去掉链接和 @ 占位符后剩下的文字，当作用户指定的会议名。"""
+    """妙记链接所在那一行、链接前面的文字，当作用户指定的会议名。
+
+    只取这一小段：用户常把一大段说明连同链接一起粘过来，整段当会议名会污染文档标题。
+    """
+    m = MINUTE_URL_RE.search(text)
+    if m:
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        text = text[line_start:m.start()]
     hint = MENTION_KEY_RE.sub(" ", URL_RE.sub(" ", text))
-    hint = re.sub(r"\s+", " ", hint).strip(" ：:，,。.-—")
+    hint = re.sub(r"\s+", " ", hint).strip(" ：:，,。.-—①②③④⑤⑥⑦⑧⑨")
     if any(hint == w for w in RETRY_WORDS):
         return ""
     return hint[:60]
