@@ -145,62 +145,102 @@ def get_meeting_minutes_transcript(meeting_id: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def get_minute_meta(minute_token: str) -> dict:
-    """获取妙记基本信息（标题等）。失败返回空 dict。"""
-    resp = requests.get(
+MINUTE_FORBIDDEN_CODES = {2091005}   # permission deny：妙记不归授权用户，也没分享给他
+MINUTE_NOT_FOUND_CODES = {2091002}   # resource not found：链接错了或妙记被删
+# 授权用户 token 本身有问题（失效 / 缺 scope），与"这份妙记没权限"是两回事
+USER_TOKEN_ERROR_CODES = {99991663, 99991668, 99991677, 99991679, 20026}
+
+
+def _json_or_empty(resp) -> dict:
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def fetch_minute_content(minute_token: str) -> tuple[str, str, dict]:
+    """用 minute_token 拉妙记内容，并把失败原因分类，供飞书内自助生成使用。
+
+    返回 (status, text, detail)：
+      - ok        text = 飞书智能纪要 + 逐字稿 拼接文本
+      - forbidden 授权用户读不到这份妙记（2091005），需要妙记所有者分享
+      - not_found 妙记不存在（2091002）
+      - empty     能读到妙记，但逐字稿为空（通常是还在转录）
+      - error     其他错误，detail["code"] / detail["msg"] 给原因
+
+    /transcript 对非 owner 常年 403，但 artifacts 接口自带 transcript 字段且权限更宽，
+    所以两个都拉、逐字稿取先拿到的那个（与 get_meeting_minutes_transcript 一致）。
+    """
+    meta_resp = requests.get(
         f"{BASE_URL}/minutes/v1/minutes/{minute_token}",
         headers=_user_headers(),
+        timeout=15,
     )
-    if resp.status_code != 200:
-        print(f"[feishu] minute meta API status={resp.status_code}")
-        return {}
-    data = resp.json()
-    if data.get("code") != 0:
-        print(f"[feishu] 获取妙记信息失败: code={data.get('code')}, msg={data.get('msg', '')[:100]}")
-        return {}
-    minute = data.get("data", {}).get("minute", {})
-    return {
+    meta = _json_or_empty(meta_resp)
+    code = meta.get("code")
+    if code != 0:
+        detail = {
+            "stage": "meta",
+            "code": code,
+            "msg": (meta.get("msg") or f"status={meta_resp.status_code}")[:200],
+        }
+        if code in MINUTE_FORBIDDEN_CODES:
+            return "forbidden", "", detail
+        if code in MINUTE_NOT_FOUND_CODES:
+            return "not_found", "", detail
+        return "error", "", detail
+
+    minute = (meta.get("data") or {}).get("minute") or {}
+    detail = {
         "title": minute.get("title", ""),
-        "topic": minute.get("topic", ""),
-        "owner": minute.get("owner", {}),
+        "owner_id": minute.get("owner_id", ""),
     }
 
-
-def get_transcript_by_minute_token(minute_token: str) -> str:
-    """直接用 minute_token 拉逐字稿 + AI 产物，返回拼接文本。"""
-    resp = requests.get(
+    transcript = ""
+    tr_resp = requests.get(
         f"{BASE_URL}/minutes/v1/minutes/{minute_token}/transcript",
         headers=_user_headers(),
+        timeout=30,
     )
-    print(f"[feishu] transcript API (by token) status={resp.status_code}")
-
-    transcript = ""
-    content_type = resp.headers.get("Content-Type", "")
-    if resp.status_code == 200 and "application/json" not in content_type:
-        transcript = resp.content.decode("utf-8", errors="replace")
+    if tr_resp.status_code == 200 and "application/json" not in tr_resp.headers.get("Content-Type", ""):
+        transcript = tr_resp.content.decode("utf-8", errors="replace")
+        detail["transcript_code"] = 0
     else:
-        try:
-            data = resp.json()
-            print(f"[feishu] 获取逐字稿失败: {data}")
-        except Exception:
-            print(f"[feishu] 获取逐字稿失败，原始响应前 200 字节: {resp.text[:200]}")
+        detail["transcript_code"] = _json_or_empty(tr_resp).get("code")
 
-    artifacts = get_minute_artifacts(minute_token)
-    summary = ""
-    if artifacts:
-        summary = artifacts.get("summary", "")
-        print(f"[feishu] AI 产物 summary 长度: {len(summary)} 字符")
+    art_resp = requests.get(
+        f"{BASE_URL}/minutes/v1/minutes/{minute_token}/artifacts",
+        headers=_user_headers(),
+        timeout=30,
+    )
+    art = _json_or_empty(art_resp)
+    art_code = art.get("code")
+    detail["artifacts_code"] = art_code
+    artifacts = (art.get("data") or {}) if art_code == 0 else {}
+    detail["artifacts"] = artifacts
+
+    summary = artifacts.get("summary", "") or ""
+    if not transcript.strip():
+        transcript = artifacts.get("transcript", "") or ""
+    detail["transcript_len"] = len(transcript)
+    detail["summary_len"] = len(summary)
+
+    if not transcript.strip():
+        tr_code = detail["transcript_code"]
+        if tr_code in MINUTE_FORBIDDEN_CODES and art_code in MINUTE_FORBIDDEN_CODES:
+            detail.update(stage="content", code=art_code, msg="permission deny")
+            return "forbidden", "", detail
+        if art_code not in (0, None) and art_code not in MINUTE_FORBIDDEN_CODES:
+            detail.update(stage="artifacts", code=art_code, msg=(art.get("msg") or "")[:200])
+            return "error", "", detail
+        return "empty", "", detail
 
     parts = []
     if summary:
         parts.append(f"【飞书智能纪要】\n{summary}")
-    if transcript:
-        parts.append(f"【逐字稿】\n{transcript}")
-
-    if not parts:
-        return ""
-    return "\n\n---\n\n".join(parts)
-
+    parts.append(f"【逐字稿】\n{transcript}")
+    return "ok", "\n\n---\n\n".join(parts), detail
 
 
 def send_message_to_chat(chat_id: str, content: str):
@@ -219,6 +259,35 @@ def send_message_to_chat(chat_id: str, content: str):
     if data.get("code") != 0:
         print(f"[feishu] 发送消息失败: {data}")
     return data
+
+
+def reply_message(message_id: str, content: str) -> dict:
+    """以应用身份回复某条消息（回到用户发消息的那个会话里）。返回飞书原始响应。"""
+    resp = requests.post(
+        f"{BASE_URL}/im/v1/messages/{message_id}/reply",
+        headers=_tenant_headers(),
+        json={"msg_type": "text", "content": json.dumps({"text": content})},
+        timeout=15,
+    )
+    data = _json_or_empty(resp)
+    if data.get("code") != 0:
+        log(f"[feishu] 回复消息失败 message_id={message_id} resp={data or resp.text[:200]}")
+    return data
+
+
+_bot_cache = {"open_id": ""}
+
+
+def get_bot_open_id() -> str:
+    """机器人自己的 open_id，用来判断群消息是不是 @ 了本机器人。失败返回空串。"""
+    if _bot_cache["open_id"]:
+        return _bot_cache["open_id"]
+    try:
+        resp = requests.get(f"{BASE_URL}/bot/v3/info", headers=_tenant_headers(), timeout=10)
+        _bot_cache["open_id"] = (_json_or_empty(resp).get("bot") or {}).get("open_id", "")
+    except requests.RequestException as e:
+        log(f"[feishu] 获取机器人信息失败: {e}")
+    return _bot_cache["open_id"]
 
 
 def create_document(title: str, content: str) -> str:
@@ -856,6 +925,8 @@ def probe_minute_readable(minute_token: str) -> tuple[str, dict]:
     return "error", {"code": code, "msg": data.get("msg", "")}
 
 
+SELF_SERVE_HINT = "私聊「会议助手」发妙记链接（或在群里 @会议助手 + 链接）即可重新生成纪要。"
+
 SKIP_NO_RECORDING = "no_recording"
 SKIP_MINUTE_FORBIDDEN = "minute_forbidden"
 SKIP_TRANSCRIPT_TIMEOUT = "transcript_timeout"
@@ -874,7 +945,7 @@ def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
             # 录制确实存在，只是转码超出了等待窗口。说"未开录制"是错的。
             text = (
                 f"⚠️ 会议「{topic}」的录制在等待窗口内仍未转码完成，已放弃自动生成。\n"
-                f"稍后妙记出来后，把妙记链接发到群里可手动生成纪要。"
+                f"稍后妙记出来后，{SELF_SERVE_HINT}"
             )
         else:
             text = f"⚠️ 会议「{topic}」未开录制或妙记未生成，无法出纪要。"
@@ -883,11 +954,11 @@ def notify_skip(topic: str, reason: str, detail: dict | None = None) -> None:
         owner = detail.get("owner_name") or detail.get("owner_id") or "会议发起人"
         text = (
             f"⚠️ 会议「{topic}」的妙记不归你所有，机器人读不到逐字稿。\n"
-            f"需要 {owner} 在妙记里把访问权限分享给你。\n"
+            f"需要 {owner} 在妙记里把访问权限分享给你，分享后{SELF_SERVE_HINT}\n"
             f"https://meetings.feishu.cn/minutes/{token}"
         )
     elif reason == SKIP_TRANSCRIPT_TIMEOUT:
-        text = f"⚠️ 会议「{topic}」等待逐字稿超时（约 60 分钟），已放弃。"
+        text = f"⚠️ 会议「{topic}」等待逐字稿超时（约 60 分钟），已放弃。{SELF_SERVE_HINT}"
     else:
         text = f"⚠️ 会议「{topic}」处理终止：{reason}"
 

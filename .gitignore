@@ -24,3 +24,4 @@ bot.log
 .vscode/
 .idea/
 *.swp
+.minute_requests.json

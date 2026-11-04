@@ -222,18 +222,34 @@ def _wanxiang_weekly_block() -> str:
 """
 
 
+def meeting_kind(meeting_topic: str) -> str:
+    """会议类型判断：品类周会走 11 人分工表，万象部门周会走 9 人名单，其余通用格式。
+
+    返回 "pinlei" / "wanxiang" / "generic"。飞书内自助生成也用它告诉用户用了哪种格式。
+    """
+    meeting_topic = meeting_topic or ""
+    if "品类" in meeting_topic:
+        return "pinlei"
+    if any(kw in meeting_topic for kw in ["万象", "经营分析", "部门周会", "周会", "周例会", "例会"]):
+        return "wanxiang"
+    return "generic"
+
+
+MEETING_KIND_LABELS = {
+    "pinlei": "品类周会格式（11 人分工表）",
+    "wanxiang": "万象周会格式（9 人名单）",
+    "generic": "通用格式",
+}
+
+
 def _build_system_prompt(meeting_topic: str = "") -> str:
     output_format = _load_prompt("output_format.md")
     glossary = _load_prompt("business_glossary.md")
 
-    # 会议类型判断：品类周会走 11 人分工表，万象部门周会走 9 人名单
-    is_pinlei = "品类" in meeting_topic
-    is_wanxiang_weekly = any(kw in meeting_topic for kw in ["万象", "经营分析", "部门周会"])
-    is_weekly = any(kw in meeting_topic for kw in ["周会", "周例会", "例会"])
-
-    if is_pinlei:
+    kind = meeting_kind(meeting_topic)
+    if kind == "pinlei":
         weekly_block = _pinlei_weekly_block()
-    elif is_wanxiang_weekly or is_weekly:
+    elif kind == "wanxiang":
         weekly_block = _wanxiang_weekly_block()
     else:
         weekly_block = ""

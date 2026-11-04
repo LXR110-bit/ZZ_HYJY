@@ -24,3 +24,11 @@ AUTHORIZED_USER_OPEN_ID = os.getenv(
 
 # 影子运行：跑真实事件流和判定，但不建文档、不转 owner、不发群消息。
 DRY_RUN = os.getenv("DRY_RUN", "").strip() in ("1", "true", "True", "yes")
+
+# 飞书内自助生成纪要（私聊 / 群里 @机器人 发妙记链接）允许谁触发。
+# 逗号分隔的 open_id；默认只有授权用户本人，防止任何人都能让机器人跑模型、建文档。
+_raw_self_serve = os.getenv("SELF_SERVE_ALLOWED_OPEN_IDS", "").strip()
+SELF_SERVE_ALLOWED_OPEN_IDS = (
+    {x.strip() for x in _raw_self_serve.split(",") if x.strip()}
+    or {AUTHORIZED_USER_OPEN_ID}
+)

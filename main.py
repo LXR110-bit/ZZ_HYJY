@@ -58,7 +58,8 @@ def on_im_message(data) -> None:
     try:
         chat_id = data.event.message.chat_id
         msg_type = data.event.message.message_type
-        print(f"[main] 收到群消息: chat={chat_id} type={msg_type}")
+        chat_type = data.event.message.chat_type
+        log(f"[main] 收到消息: chat={chat_id} chat_type={chat_type} type={msg_type}")
     except Exception as e:
         print(f"[main] 群消息事件解析失败: {e}")
         return
